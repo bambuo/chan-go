@@ -90,7 +90,7 @@ func (c *WSClient) wsHandler() binance.WsKlineHandler {
 
 		c.logger.Debug("K线事件已发布",
 			"symbol", kl.Symbol,
-			"event_type", eventType,
+			"eventType", eventType,
 			"close", kl.Close,
 		)
 	}

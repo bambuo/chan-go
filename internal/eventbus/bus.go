@@ -44,7 +44,7 @@ func (b *Bus) Subscribe(eventType types.KlineEventType, handler EventHandler) in
 	}
 	b.subscribers[eventType][id] = handler
 
-	b.logger.Debug("注册订阅者", "event_type", eventType, "sub_id", id)
+	b.logger.Debug("注册订阅者", "eventType", eventType, "subId", id)
 	return id
 }
 
@@ -59,7 +59,7 @@ func (b *Bus) Unsubscribe(eventType types.KlineEventType, id int64) {
 			delete(b.subscribers, eventType)
 		}
 	}
-	b.logger.Debug("取消订阅者", "event_type", eventType, "sub_id", id)
+	b.logger.Debug("取消订阅者", "eventType", eventType, "subId", id)
 }
 
 // Publish 将事件顺序分发给所有匹配的订阅者。
@@ -79,9 +79,9 @@ func (b *Bus) Publish(event types.KlineEvent) {
 	}
 
 	b.logger.Debug("事件已发布",
-		"event_type", event.Type,
+		"eventType", event.Type,
 		"symbol", event.Kline.Symbol,
-		"subscriber_count", len(handlers),
+		"subscriberCount", len(handlers),
 	)
 }
 
@@ -90,8 +90,8 @@ func recoverFunc(event types.KlineEvent, handler EventHandler, id int64) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("订阅者panic",
-				"sub_id", id,
-				"event_type", event.Type,
+				"subId", id,
+				"eventType", event.Type,
 				"panic", r,
 			)
 		}

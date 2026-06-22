@@ -101,7 +101,7 @@ const ctxKeyRequestID ctxKey = "request_id"
 func WithContext(ctx context.Context) *slog.Logger {
 	logger := slog.Default()
 	if reqID, ok := ctx.Value(ctxKeyRequestID).(string); ok {
-		logger = logger.With("request_id", reqID)
+		logger = logger.With("requestId", reqID)
 	}
 	return logger
 }

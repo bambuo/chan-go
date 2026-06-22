@@ -21,9 +21,9 @@ type Kline struct {
 	Low       decimal.Decimal `json:"low"`
 	Close     decimal.Decimal `json:"close"`
 	Volume    decimal.Decimal `json:"volume"`
-	OpenTime  int64           `json:"open_time"`  // Unix毫秒
-	CloseTime int64           `json:"close_time"` // Unix毫秒
-	IsClosed  bool            `json:"is_closed"`  // 该K线是否已闭合
+	OpenTime  int64           `json:"openTime"`  // Unix毫秒
+	CloseTime int64           `json:"closeTime"` // Unix毫秒
+	IsClosed  bool            `json:"isClosed"`  // 该K线是否已闭合
 }
 
 // Clone 返回Kline的深拷贝。
@@ -104,10 +104,10 @@ func (f FractalType) String() string {
 // Fractal 表示缠论中的一个分型。
 type Fractal struct {
 	Type     FractalType `json:"type"`
-	Index    int         `json:"index"`     // 在非包含K线序列中的索引
-	High     float64     `json:"high"`      // 中间元素的高点
-	Low      float64     `json:"low"`       // 中间元素的低点
-	OpenTime int64       `json:"open_time"` // 中间元素的时间
+	Index    int         `json:"index"`    // 在非包含K线序列中的索引
+	High     float64     `json:"high"`     // 中间元素的高点
+	Low      float64     `json:"low"`      // 中间元素的低点
+	OpenTime int64       `json:"openTime"` // 中间元素的时间
 	// Confirmed 为true时表示后续K线已确认该分型。
 	Confirmed bool `json:"confirmed"`
 }

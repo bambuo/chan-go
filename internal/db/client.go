@@ -108,9 +108,9 @@ func (c *Client) InsertKline(ctx context.Context, k *types.Kline) error {
 	if err != nil {
 		c.logger.Error("插入K线失败",
 			"symbol", k.Symbol,
-			"open_time", k.OpenTime,
+			"openTime", k.OpenTime,
 			"error", err,
-			"elapsed_ms", elapsed.Milliseconds(),
+			"elapsedMs", elapsed.Milliseconds(),
 		)
 		return fmt.Errorf("插入K线: %w", err)
 	}
@@ -119,16 +119,16 @@ func (c *Client) InsertKline(ctx context.Context, k *types.Kline) error {
 	if rows == 0 {
 		c.logger.Debug("重复K线已跳过",
 			"symbol", k.Symbol,
-			"open_time", k.OpenTime,
+			"openTime", k.OpenTime,
 		)
 		return nil
 	}
 
 	c.logger.Debug("K线已插入",
 		"symbol", k.Symbol,
-		"open_time", k.OpenTime,
+		"openTime", k.OpenTime,
 		"close", k.Close,
-		"elapsed_ms", elapsed.Milliseconds(),
+		"elapsedMs", elapsed.Milliseconds(),
 	)
 	return nil
 }
@@ -142,7 +142,7 @@ func (c *Client) InsertClosedKlineHandler(ctx context.Context) func(types.KlineE
 		if err := c.InsertKline(ctx, evt.Kline); err != nil {
 			c.logger.Error("事件处理器插入失败",
 				"symbol", evt.Kline.Symbol,
-				"open_time", evt.Kline.OpenTime,
+				"openTime", evt.Kline.OpenTime,
 				"error", err,
 			)
 		}
