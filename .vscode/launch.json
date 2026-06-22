@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "启动缠论分析系统",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/server",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CL_LOG_LEVEL": "debug",
+                "CL_LOG_FORMAT": "text"
+            },
+            "args": [],
+            "buildFlags": "-tags=sqlite_omit_load_extension"
+        }
+    ]
+}
