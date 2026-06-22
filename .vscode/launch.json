@@ -10,10 +10,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "CL_LOG_LEVEL": "debug",
-                "CL_LOG_FORMAT": "text"
+                "CL_LOG_JSON": "true"
             },
-            "args": [],
-            "buildFlags": "-tags=sqlite_omit_load_extension"
+            "args": []
         }
     ]
 }
