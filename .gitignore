@@ -1,3 +1,7 @@
 go.sum
 data/
 __debug_bin*
+# Ent 代码生成产物（保留 schema/ 与 generate.go 手写文件）
+internal/ent/**/*.go
+!internal/ent/generate.go
+!internal/ent/schema/

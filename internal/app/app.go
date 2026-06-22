@@ -9,14 +9,18 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"trade/internal/binance"
 	"trade/internal/chanlun"
 	"trade/internal/config"
-	"trade/internal/db"
+	"trade/internal/ent"
 	"trade/internal/eventbus"
 	"trade/internal/log"
 	"trade/internal/types"
+
+	"entgo.io/ent/dialect/sql"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // App 是缠论分析系统的主控对象，封装所有组件与生命周期。
@@ -25,7 +29,7 @@ type App struct {
 	logger *slog.Logger
 
 	bus *eventbus.Bus
-	db  *db.Client
+	db  *ent.Client
 	ws  *binance.WSClient
 
 	containProc *chanlun.ContainProcessor
@@ -59,14 +63,48 @@ func New(cfg config.Config) (*App, error) {
 	// 初始化事件总线。
 	bus := eventbus.New()
 
-	// 初始化数据库。
-	dbClient, err := db.NewClient(context.Background(), cfg.DBPath)
+	// 初始化数据库 — 直接使用 ent 生成的 ORM 客户端。
+	drv, err := sql.Open("sqlite3", cfg.DSN())
 	if err != nil {
-		return nil, fmt.Errorf("初始化数据库: %w", err)
+		return nil, fmt.Errorf("打开 sqlite: %w", err)
+	}
+	db := drv.DB()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(time.Hour)
+
+	ec := ent.NewClient(ent.Driver(drv))
+	if err := ec.Schema.Create(context.Background()); err != nil {
+		return nil, fmt.Errorf("ent 迁移: %w", err)
 	}
 
-	// 订阅数据库处理器。
-	dbSubID := bus.Subscribe(types.EventKlineClosed, dbClient.InsertClosedKlineHandler(context.Background()))
+	// 订阅数据库处理器：闭合 K 线写入数据库。
+	dbSubID := bus.Subscribe(types.EventKlineClosed, func(evt types.KlineEvent) {
+		if evt.Kline == nil {
+			return
+		}
+		k := evt.Kline
+		_, err := ec.Kline.Create().
+			SetSymbol(k.Symbol).
+			SetOpen(k.Open.InexactFloat64()).
+			SetHigh(k.High.InexactFloat64()).
+			SetLow(k.Low.InexactFloat64()).
+			SetClose(k.Close.InexactFloat64()).
+			SetVolume(k.Volume.InexactFloat64()).
+			SetOpenTime(k.OpenTime).
+			SetCloseTime(k.CloseTime).
+			SetCreatedAt(time.Now()).
+			OnConflict(sql.ConflictColumns("symbol", "open_time")).
+			Ignore().
+			ID(context.Background())
+		if err != nil {
+			logger.Error("写入 K 线失败",
+				"symbol", k.Symbol,
+				"openTime", k.OpenTime,
+				"error", err,
+			)
+		}
+	})
 
 	// 初始化缠论分析器。
 	containProc := chanlun.NewContainProcessor()
@@ -103,7 +141,7 @@ func New(cfg config.Config) (*App, error) {
 		cfg:          cfg,
 		logger:       logger,
 		bus:          bus,
-		db:           dbClient,
+		db:           ec,
 		ws:           wsClient,
 		containProc:  containProc,
 		fractalProc:  fractalProc,
@@ -171,6 +209,6 @@ func (a *App) Bus() *eventbus.Bus {
 }
 
 // DB 暴露数据库客户端（用于测试或扩展）。
-func (a *App) DB() *db.Client {
+func (a *App) DB() *ent.Client {
 	return a.db
 }

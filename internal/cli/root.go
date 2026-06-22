@@ -17,7 +17,7 @@ import (
 const (
 	defaultLogLevel = "info"
 	defaultLogJSON  = true
-	defaultDBPath   = "file:data/klines.db?cache=shared&_journal_mode=WAL"
+	defaultDBPath   = "data/klines.db"
 	defaultSymbols  = "btcusdt,ethusdt"
 	defaultInterval = "1m"
 )
