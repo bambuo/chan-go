@@ -63,8 +63,6 @@ func newRootCmd() *cobra.Command {
 		"交易对列表，逗号分隔  [env: CL_SYMBOLS]")
 	flags.String("interval", envDefault("CL_INTERVAL", defaultInterval),
 		"K线时间周期  [env: CL_INTERVAL]")
-	flags.String("ws-url", envDefault("CL_WS_URL", ""),
-		"WebSocket 地址（留空使用币安默认）  [env: CL_WS_URL]")
 
 	return cmd
 }
@@ -84,7 +82,6 @@ func parseConfig() config.Config {
 	}
 
 	cfg.Interval = viper.GetString("interval")
-	cfg.WSURL = viper.GetString("ws-url")
 	return cfg
 }
 

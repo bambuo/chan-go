@@ -97,11 +97,7 @@ func New(cfg config.Config) (*App, error) {
 	})
 
 	// 创建 WebSocket 客户端。
-	wsOpts := []binance.WSClientOption{}
-	if cfg.WSURL != "" {
-		wsOpts = append(wsOpts, binance.WithWSURL(cfg.WSURL))
-	}
-	wsClient := binance.NewWSClient(cfg.Symbols, cfg.Interval, bus, wsOpts...)
+	wsClient := binance.NewWSClient(cfg.Symbols, cfg.Interval, bus)
 
 	return &App{
 		cfg:          cfg,
@@ -138,7 +134,7 @@ func (a *App) Run(ctx context.Context) error {
 		"interval", a.cfg.Interval,
 	)
 
-	if err := a.ws.Start(ctx); err != nil && err != context.Canceled {
+	if err := a.ws.Start(); err != nil {
 		return err
 	}
 
