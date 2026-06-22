@@ -11,15 +11,16 @@ import (
 
 // ContainProcessor 处理缠论K线包含合并。
 //
-// 算法（依据缠论）：
-//  1. 确定前两根非包含K线的方向：
+// 算法（依据缠论原文，从左到右顺序递进）：
+//  1. 新K线加入时，与当前非包含序列的最后一个元素比较。
+//  2. 检查包含关系，如果不包含则直接作为新元素加入非包含序列。
+//  3. 如果被包含，则从最近两根非包含元素确定方向：
 //     - 向上：第二根高点>第一根高点 且 第二根低点>第一根低点
 //     - 向下：第二根高点<第一根高点 且 第二根低点<第一根低点
-//  2. 对于已确立方向的序列：
-//     - 如果当前K线被前一根包含，则合并：
-//     - 向上方向：取较高高点和较高低点
-//     - 向下方向：取较低高点和较低低点
-//  3. 当出现非包含K线时，由最近两根非包含元素重新确定方向。
+//     - 方向不明或仅有一根非包含元素：按向上处理（缠论规定）
+//  4. 按方向合并：向上取较高高点和较高低点，向下取较低高点和较低低点。
+//  5. 合并后修改前一元素的 High/Low，新元素标记为已包含。
+//  6. 级联包含在后续 Process 调用中自然处理，无需回溯。
 type ContainProcessor struct {
 	// 所有元素，包括被标记为包含（已合并）的元素。
 	elements []*types.ChanKline
@@ -48,7 +49,8 @@ func (p *ContainProcessor) Process(raw *types.Kline) []*types.ChanKline {
 	}
 
 	p.elements = append(p.elements, ck)
-	return p.resolve()
+	p.resolve()
+	return p.nonContained()
 }
 
 // Reset 清除所有已处理的元素。
@@ -72,67 +74,68 @@ func (p *ContainProcessor) Elements() []*types.ChanKline {
 	return p.nonContained()
 }
 
-// resolve 执行增量包含处理。
-// 算法：
-//  1. 获取非包含序列。
-//  2. 对每个新增元素（最后添加的原始元素），从后往前处理：
-//     a. 如果元素已包含，跳过。
-//     b. 找到它前面的最后一个非包含元素。
-//     c. 从最近两个非包含元素确定当前方向。
-//     d. 检查包含关系。如果被包含，则合并。
-func (p *ContainProcessor) resolve() []*types.ChanKline {
-	if len(p.elements) < 2 {
-		return p.nonContained()
-	}
-
+// resolve 标准缠论包含处理（从左到右顺序递进）。
+//
+// 每次只处理最新添加的元素，检查其与最近一个非包含元素的关系。
+// 如果被包含，则确定方向后进行合并；否则不做任何操作。
+// 级联包含在后续 Process 调用中自然处理，无需回溯扫描。
+func (p *ContainProcessor) resolve() {
 	n := len(p.elements)
-
-	// 从最新元素开始向后处理，支持级联包含。
-	for i := n - 1; i >= 1; i-- {
-		curr := p.elements[i]
-		if curr.Contained {
-			continue
-		}
-
-		// 查找curr之前的最近两个非包含元素。
-		last, secondLast := p.lastTwoNonContainedBefore(i)
-		if last == nil {
-			continue
-		}
-
-		// 确定当前方向。
-		dir := types.DirectionNone
-		if secondLast != nil {
-			dir = p.determineDirection(secondLast, last)
-		} else {
-			// curr前只有一个非包含元素。
-			// 检查该元素与curr之间的方向。
-			dir = p.determineDirection(last, curr)
-		}
-
-		// 检查包含关系：curr是否被last包含？
-		if isContained(curr, last) {
-			p.merge(last, curr, dir)
-		}
+	if n < 2 {
+		return
 	}
 
-	return p.nonContained()
+	// 获取最新添加的元素。
+	curr := p.elements[n-1]
+	if curr.Contained {
+		return
+	}
+
+	// 找到前一个非包含元素的索引。
+	prevIdx := p.prevNonContainedIndex(n - 1)
+	if prevIdx < 0 {
+		return
+	}
+	prev := p.elements[prevIdx]
+
+	// 检查是否被包含。
+	if !isContained(curr, prev) {
+		return
+	}
+
+	// 被包含，确定方向。
+	dir := p.resolveDirection(prevIdx)
+
+	// 合并：prev 吸收 curr。
+	p.merge(prev, curr, dir)
 }
 
-// lastTwoNonContainedBefore 返回给定索引之前的最近两个非包含元素。
-// 第一个返回值是最接近的一个。
-func (p *ContainProcessor) lastTwoNonContainedBefore(i int) (last, secondLast *types.ChanKline) {
+// resolveDirection 确定当前合并方向。
+//
+// 从非包含序列中取最后两根元素判断方向。
+// - 只有一根非包含元素（前两根K线）：按向上处理（缠论规定）。
+// - 方向不明时：按向上处理（缠论规定）。
+func (p *ContainProcessor) resolveDirection(prevIdx int) types.ChanDirection {
+	prevPrevIdx := p.prevNonContainedIndex(prevIdx)
+	if prevPrevIdx < 0 {
+		// 前两根K线包含，按向上处理。
+		return types.DirectionUp
+	}
+	dir := p.determineDirection(p.elements[prevPrevIdx], p.elements[prevIdx])
+	if dir == types.DirectionNone {
+		return types.DirectionUp
+	}
+	return dir
+}
+
+// prevNonContainedIndex 返回 i 之前最近的非包含元素的索引，不存在返回 -1。
+func (p *ContainProcessor) prevNonContainedIndex(i int) int {
 	for j := i - 1; j >= 0; j-- {
 		if !p.elements[j].Contained {
-			if last == nil {
-				last = p.elements[j]
-			} else if secondLast == nil {
-				secondLast = p.elements[j]
-				return
-			}
+			return j
 		}
 	}
-	return last, nil
+	return -1
 }
 
 // determineDirection 计算两个非包含元素之间的方向。
@@ -147,22 +150,27 @@ func (p *ContainProcessor) determineDirection(a, b *types.ChanKline) types.ChanD
 }
 
 // merge 根据方向将当前元素合并到目标元素中。
+//
+// 方向不明（DirectionNone）时按向上处理（缠论原文规定）：
+//   - 向上或方向不明：取较高高点和较高低点。
+//   - 向下：取较低高点和较低低点。
+//
 // 合并后，当前元素被标记为已包含。
 func (p *ContainProcessor) merge(target, curr *types.ChanKline, dir types.ChanDirection) {
-	if dir == types.DirectionUp {
-		// 取较高高点和较高低点。
-		if curr.High > target.High {
-			target.High = curr.High
-		}
-		if curr.Low > target.Low {
-			target.Low = curr.Low
-		}
-	} else {
-		// 取较低高点和较低低点。
+	if dir == types.DirectionDown {
+		// 向下：取较低高点和较低低点。
 		if curr.High < target.High {
 			target.High = curr.High
 		}
 		if curr.Low < target.Low {
+			target.Low = curr.Low
+		}
+	} else {
+		// DirectionUp / DirectionNone：取较高高点和较高低点。
+		if curr.High > target.High {
+			target.High = curr.High
+		}
+		if curr.Low > target.Low {
 			target.Low = curr.Low
 		}
 	}
@@ -171,15 +179,17 @@ func (p *ContainProcessor) merge(target, curr *types.ChanKline, dir types.ChanDi
 	target.MergedFrom += curr.MergedFrom
 }
 
-// isContained 检查元素curr是否被元素prev包含。
-// 包含含义：curr的高点≤prev的高点 且 curr的低点≥prev的低点，
-// 或 curr的高点≥prev的高点 且 curr的低点≤prev的低点。
+// isContained 检查元素 curr 是否与元素 prev 存在包含关系。
+//
+// 包含关系定义（对称）：
+//   - curr的高点≤prev的高点 且 curr的低点≥prev的低点（curr在prev内部）
+//   - 或 curr的高点≥prev的高点 且 curr的低点≤prev的低点（prev在curr内部）
 func isContained(curr, prev *types.ChanKline) bool {
 	return (curr.High <= prev.High && curr.Low >= prev.Low) ||
 		(curr.High >= prev.High && curr.Low <= prev.Low)
 }
 
-// IsContained 是isContained的公开包装，方便测试。
+// IsContained 是 isContained 的公开包装，方便测试。
 func IsContained(curr, prev *types.ChanKline) bool {
 	return isContained(curr, prev)
 }
