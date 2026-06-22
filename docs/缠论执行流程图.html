@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>缠论执行流程图</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --border: #334155;
+    --text: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --green: #22c55e;
+    --green-bg: #052e16;
+    --yellow: #eab308;
+    --yellow-bg: #422006;
+    --orange: #f97316;
+    --orange-bg: #431407;
+    --red: #ef4444;
+    --red-bg: #450a0a;
+    --blue: #3b82f6;
+    --blue-bg: #172554;
+    --purple: #a855f7;
+    --purple-bg: #3b0764;
+    --cyan: #06b6d4;
+    --cyan-bg: #083344;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 40px 20px 80px;
+  }
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: 2px;
+  }
+  .subtitle {
+    color: var(--text-secondary);
+    font-size: 14px;
+    margin-bottom: 40px;
+  }
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 36px;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
+  .legend-dot.green { background: var(--green); }
+  .legend-dot.yellow { background: var(--yellow); }
+  .legend-dot.orange { background: var(--orange); }
+  .legend-dot.red { background: var(--red); }
+  .legend-dot.blue { background: var(--blue); }
+  .legend-dot.purple { background: var(--purple); }
+  .legend-dot.cyan { background: var(--cyan); }
+
+  .flowchart {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    max-width: 800px;
+    width: 100%;
+  }
+
+  .node {
+    background: var(--panel);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 24px;
+    width: 100%;
+    max-width: 560px;
+    position: relative;
+    transition: all 0.2s;
+  }
+  .node:hover {
+    border-color: #64748b;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  .node-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .node-number {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .node-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .node-body {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    margin-top: 4px;
+  }
+  .node-badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .node-detail {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .detail-tag {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 28px;
+    position: relative;
+  }
+  .connector-line {
+    width: 2px;
+    flex: 1;
+    background: linear-gradient(to bottom, var(--border), var(--cyan));
+  }
+  .connector-arrow {
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--cyan);
+  }
+
+  /* branch from node 5 (线段) to two paths */
+  .branch-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    width: 100%;
+    max-width: 560px;
+    position: relative;
+    margin: 0;
+  }
+  .branch-split {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 40px;
+    width: 100%;
+  }
+  .branch-column {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .branch-column .node {
+    max-width: 240px;
+    padding: 14px 16px;
+  }
+  .branch-column .node-title { font-size: 14px; }
+  .branch-connector-h {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+  .branch-connector-h .h-line {
+    width: 240px;
+    height: 2px;
+    background: linear-gradient(to right, var(--border), var(--cyan));
+    position: relative;
+  }
+  .branch-connector-h .h-arrow {
+    position: absolute;
+    right: -6px;
+    top: -5px;
+    width: 0;
+    height: 0;
+    border-top: 6px solid transparent;
+    border-bottom: 6px solid transparent;
+    border-left: 8px solid var(--cyan);
+  }
+
+  .merge-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    width: 100%;
+    max-width: 560px;
+  }
+  .merge-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    width: 100%;
+  }
+  .merge-column {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .merge-column .connector { height: 28px; }
+
+  .merge-center {
+    width: 2px;
+    position: relative;
+  }
+
+  .section-label {
+    width: 100%;
+    max-width: 560px;
+    text-align: center;
+    padding: 20px 0 8px;
+    margin-top: 8px;
+    border-top: 1px dashed var(--border);
+  }
+  .section-label span {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    padding: 4px 16px;
+    border-radius: 6px;
+  }
+
+  .green-theme .node-number { background: var(--green-bg); color: var(--green); }
+  .green-theme.node { border-color: rgba(34,197,94,0.3); }
+  .green-theme .section-label span { background: var(--green-bg); color: var(--green); }
+
+  .yellow-theme .node-number { background: var(--yellow-bg); color: var(--yellow); }
+  .yellow-theme.node { border-color: rgba(234,179,8,0.3); }
+  .yellow-theme .section-label span { background: var(--yellow-bg); color: var(--yellow); }
+
+  .orange-theme .node-number { background: var(--orange-bg); color: var(--orange); }
+  .orange-theme.node { border-color: rgba(249,115,22,0.3); }
+  .orange-theme .section-label span { background: var(--orange-bg); color: var(--orange); }
+
+  .red-theme .node-number { background: var(--red-bg); color: var(--red); }
+  .red-theme.node { border-color: rgba(239,68,68,0.3); }
+  .red-theme .section-label span { background: var(--red-bg); color: var(--red); }
+
+  .blue-theme .node-number { background: var(--blue-bg); color: var(--blue); }
+  .blue-theme.node { border-color: rgba(59,130,246,0.3); }
+  .blue-theme .section-label span { background: var(--blue-bg); color: var(--blue); }
+
+  .purple-theme .node-number { background: var(--purple-bg); color: var(--purple); }
+  .purple-theme.node { border-color: rgba(168,85,247,0.3); }
+  .purple-theme .section-label span { background: var(--purple-bg); color: var(--purple); }
+
+  .cyan-theme .node-number { background: var(--cyan-bg); color: var(--cyan); }
+  .cyan-theme.node { border-color: rgba(6,182,212,0.2); }
+
+  .level-tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .level-a { background: var(--green-bg); color: var(--green); }
+  .level-b { background: var(--yellow-bg); color: var(--yellow); }
+  .level-c { background: var(--orange-bg); color: var(--orange); }
+  .level-d { background: var(--red-bg); color: var(--red); }
+
+  .fork-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+  .fork-indicator .fork-line {
+    width: 80px;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .footer {
+    margin-top: 48px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    text-align: center;
+    line-height: 1.8;
+  }
+  .footer a { color: var(--cyan); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1>缠论执行流程</h1>
+<p class="subtitle">基于《缠中说禅：教你炒股票108课》· 从K线到交易决策的完整算法管线</p>
+
+<div class="legend">
+  <div class="legend-item"><span class="legend-dot green"></span> A级：纯机械可编码</div>
+  <div class="legend-item"><span class="legend-dot yellow"></span> B级：可编码，需调参</div>
+  <div class="legend-item"><span class="legend-dot orange"></span> C级：需等待信号确认</div>
+  <div class="legend-item"><span class="legend-dot red"></span> D级：部分需人工辅助</div>
+  <div class="legend-item"><span class="legend-dot blue"></span> 交易动作</div>
+  <div class="legend-item"><span class="legend-dot purple"></span> 风险控制</div>
+</div>
+
+<div class="flowchart">
+
+  <!-- ===== 阶段一：数据准备 ===== -->
+  <div class="node cyan-theme">
+    <div class="node-header">
+      <div class="node-number">0</div>
+      <div class="node-title">加载原始K线数据</div>
+      <span class="level-tag" style="background:var(--cyan-bg);color:var(--cyan)">INPUT</span>
+    </div>
+    <div class="node-body">
+      K[i] = (O, H, L, C, V) &nbsp;|&nbsp; MACD(DIF, DEA, HIST) &nbsp;|&nbsp; 确定操作级别(1min/5min/30min/日线)
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段二：K线包含处理 (A级) ===== -->
+  <div class="node green-theme">
+    <div class="node-header">
+      <div class="node-number">1</div>
+      <div class="node-title">K线包含处理</div>
+      <span class="level-tag level-a">A级</span>
+    </div>
+    <div class="node-body">相邻K线存在包含关系 → 合并处理</div>
+    <div class="node-detail">
+      <span class="detail-tag">向上处理: 取高高 MAX(H), MAX(L)</span>
+      <span class="detail-tag">向下处理: 取低低 MIN(H), MIN(L)</span>
+      <span class="detail-tag">方向由前一根K线决定</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段三：分型识别 (A级) ===== -->
+  <div class="node green-theme">
+    <div class="node-header">
+      <div class="node-number">2</div>
+      <div class="node-title">分型识别</div>
+      <span class="level-tag level-a">A级</span>
+    </div>
+    <div class="node-body">三根K线构成的转折形态识别</div>
+    <div class="node-detail">
+      <span class="detail-tag">顶分型: 中K线高点最高 ∧ 低点最高</span>
+      <span class="detail-tag">底分型: 中K线低点最低 ∧ 高点最低</span>
+      <span class="detail-tag">分型确认: 后续K线突破/跌破验证</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段四：笔的划分 (A级) ===== -->
+  <div class="node green-theme">
+    <div class="node-header">
+      <div class="node-number">3</div>
+      <div class="node-title">笔的划分</div>
+      <span class="level-tag level-a">A级</span>
+    </div>
+    <div class="node-body">连接交替顶底分型，形成笔</div>
+    <div class="node-detail">
+      <span class="detail-tag">顶底交替 + 中间≥1根独立K线</span>
+      <span class="detail-tag">区间检查: 顶的K线区间须高于底</span>
+      <span class="detail-tag">同性质分型去重 (顶取高, 底取低)</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段五：线段划分 (B级) 带分支 ===== -->
+  <div class="node yellow-theme">
+    <div class="node-header">
+      <div class="node-number">4</div>
+      <div class="node-title">线段划分</div>
+      <span class="level-tag level-b">B级</span>
+    </div>
+    <div class="node-body">由至少3笔组成，前3笔必须有重合 → 判别破坏类型</div>
+    <div class="node-detail">
+      <span class="detail-tag">情况一: 第1笔直接笔破坏前段</span>
+      <span class="detail-tag">情况二: 未直接破坏, 需特征序列分型确认</span>
+    </div>
+  </div>
+
+  <div class="fork-indicator"><span class="fork-line"></span> 线段划分需要特征序列辅助 <span class="fork-line"></span></div>
+
+  <!-- 分支: 特征序列 -->
+  <div class="node yellow-theme" style="max-width:460px; margin-bottom:28px;">
+    <div class="node-header">
+      <div class="node-number">4a</div>
+      <div class="node-title">特征序列计算</div>
+      <span class="level-tag level-b">B级</span>
+    </div>
+    <div class="node-body">向上线段 → 取所有向下笔 &nbsp;|&nbsp; 向下线段 → 取所有向上笔</div>
+    <div class="node-detail">
+      <span class="detail-tag">对特征序列进行包含处理</span>
+      <span class="detail-tag">找出特征序列分型以确认破坏</span>
+      <span class="detail-tag">缺口判定: 第1/2元素间是否有缺口</span>
+    </div>
+  </div>
+
+  <!-- 回到主线 -->
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段六：中枢识别 (A级) ===== -->
+  <div class="node green-theme">
+    <div class="node-header">
+      <div class="node-number">5</div>
+      <div class="node-title">中枢识别</div>
+      <span class="level-tag level-a">A级</span>
+    </div>
+    <div class="node-body">至少3段连续次级别走势类型的重叠区间</div>
+    <div class="node-detail">
+      <span class="detail-tag">ZG = min(高点) &nbsp;|&nbsp; ZD = max(低点)</span>
+      <span class="detail-tag">中枢延伸: 后续笔继续与区间重叠</span>
+      <span class="detail-tag">中枢扩展: 两同级别中枢波动重叠→升级</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段七：走势类型分类 (B级) ===== -->
+  <div class="node yellow-theme">
+    <div class="node-header">
+      <div class="node-number">6</div>
+      <div class="node-title">走势类型分类</div>
+      <span class="level-tag level-b">B级</span>
+    </div>
+    <div class="node-body">根据中枢数量和方向确定走势类型</div>
+    <div class="node-detail">
+      <span class="detail-tag">盘整: 仅含1个中枢</span>
+      <span class="detail-tag">上涨趋势: ≥2个依次上移、不重叠的中枢</span>
+      <span class="detail-tag">下跌趋势: ≥2个依次下移、不重叠的中枢</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段八：背驰判定 (B级) ===== -->
+  <div class="node yellow-theme">
+    <div class="node-header">
+      <div class="node-number">7</div>
+      <div class="node-title">背驰判定</div>
+      <span class="level-tag level-b">B级</span>
+    </div>
+    <div class="node-body">⚠️ "没有趋势，没有背驰" — 盘整中无所谓背驰</div>
+    <div class="node-detail">
+      <span class="detail-tag">趋势背驰: 后段MACD柱面积 &lt; 前段</span>
+      <span class="detail-tag">盘整背驰: 离开中枢笔 vs 进入中枢笔</span>
+      <span class="detail-tag">区间套: 日线→30min→5min→1min 精确定位</span>
+    </div>
+  </div>
+
+  <!-- 分支: 背驰判定分裂为趋势背驰 / 盘整背驰 -->
+  <div class="branch-split" style="margin: 8px 0;">
+    <div class="branch-column">
+      <div class="branch-connector-h"><div class="h-line"><div class="h-arrow"></div></div></div>
+      <div class="node yellow-theme" style="max-width:240px;">
+        <div class="node-header">
+          <div class="node-title">趋势背驰</div>
+        </div>
+        <div class="node-body" style="font-size:12px;">需≥2个同向中枢<br>后段MACD面积缩小</div>
+      </div>
+    </div>
+    <div class="branch-column">
+      <div class="branch-connector-h"><div class="h-line"><div class="h-arrow"></div></div></div>
+      <div class="node yellow-theme" style="max-width:240px;">
+        <div class="node-header">
+          <div class="node-title">盘整背驰</div>
+        </div>
+        <div class="node-body" style="font-size:12px;">仅1个中枢<br>离开段 vs 进入段比较</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段九：买卖点识别 (C级) 三大买卖点 ===== -->
+  <div class="node orange-theme">
+    <div class="node-header">
+      <div class="node-number">8</div>
+      <div class="node-title">买卖点识别</div>
+      <span class="level-tag level-c">C级</span>
+    </div>
+    <div class="node-body">基于走势终完美 → 三类买卖点各自触发</div>
+  </div>
+
+  <div class="branch-split" style="margin: 8px 0 0;">
+    <div class="branch-column">
+      <div class="branch-connector-h"><div class="h-line"><div class="h-arrow"></div></div></div>
+      <div class="node orange-theme" style="max-width:240px;">
+        <div class="node-header"><div class="node-number">8.1</div><div class="node-title">第一类买卖点</div></div>
+        <div class="node-body" style="font-size:12px;">
+          一买: 下跌趋势最后一个中枢下方 + 底背驰<br>
+          一卖: 上涨趋势最后一个中枢上方 + 顶背驰
+        </div>
+      </div>
+    </div>
+    <div class="branch-column">
+      <div class="branch-connector-h"><div class="h-line"><div class="h-arrow"></div></div></div>
+      <div class="node orange-theme" style="max-width:240px;">
+        <div class="node-header"><div class="node-number">8.2</div><div class="node-title">第二类买卖点</div></div>
+        <div class="node-body" style="font-size:12px;">
+          二买: 一买后第一次回调不创新低<br>
+          二卖: 一卖后第一次回抽不创新高
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="height:8px;"></div>
+
+  <div class="branch-split" style="justify-content:center;">
+    <div class="branch-column">
+      <div class="branch-connector-h"><div class="h-line"><div class="h-arrow"></div></div></div>
+      <div class="node orange-theme" style="max-width:280px;">
+        <div class="node-header"><div class="node-number">8.3</div><div class="node-title">第三类买卖点</div></div>
+        <div class="node-body" style="font-size:12px;">
+          三买: 次级别离开中枢 → 次级别回试不触及ZG → 底背驰确认<br>
+          三卖: 次级别离开中枢 → 次级别回升不触及ZD → 顶背驰确认
+        </div>
+        <div class="node-detail">
+          <span class="detail-tag">最稳定的程序化信号 ⭐</span>
+          <span class="detail-tag">只买第一个中枢的三买</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段十：交易策略执行 (D级 + 蓝色) ===== -->
+  <div class="node blue-theme">
+    <div class="node-header">
+      <div class="node-number">9</div>
+      <div class="node-title">交易策略执行</div>
+      <span class="level-tag" style="background:var(--blue-bg);color:var(--blue)">ACTION</span>
+    </div>
+    <div class="node-body">根据买卖点信号制定具体交易计划</div>
+    <div class="node-detail">
+      <span class="detail-tag">仓位管理: 分批建仓/减仓</span>
+      <span class="detail-tag">第三类买点卖出条件: ①次级别不能新高→卖 ②本级别背驰→卖一半 ③无背驰→持有</span>
+      <span class="detail-tag">分型辅助: 底分型→次级别找二买介入</span>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ===== 阶段十一：风险控制 (紫色 + D级) ===== -->
+  <div class="node purple-theme">
+    <div class="node-header">
+      <div class="node-number">10</div>
+      <div class="node-title">风险控制 & 级别递归</div>
+      <span class="level-tag level-d">D级</span>
+    </div>
+    <div class="node-body">
+      买错止损 &nbsp;|&nbsp; 二卖纠正 &nbsp;|&nbsp; 三卖最后退出 &nbsp;|&nbsp; 级别递归: 低级→高级递归构造
+    </div>
+    <div class="node-detail">
+      <span class="detail-tag">确认买错→手起刀落</span>
+      <span class="detail-tag">递归链: K线→分型→笔→线段→中枢→高级别</span>
+      <span class="detail-tag">经验周期: 1min→5min→30min→日线→周线</span>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">
+  <p>基于《缠中说禅：教你炒股票108课》整理 &nbsp;|&nbsp; 算法出处: 第15/17/18/20/24/27/49/61/62/65/67/71/77/78/79/82课</p>
+  <p>级别分层: 🟢 A级(机械) → 🟡 B级(可编码) → 🟠 C级(需确认) → 🔴 D级(需人工) &nbsp;|&nbsp; 2026-06-20</p>
+</div>
+
+</body>
+</html>
