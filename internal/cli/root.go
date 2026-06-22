@@ -1,28 +1,19 @@
-// Package cli 提供 cobra 命令行定义与系统启动逻辑。
+// Package cli 提供 cobra 命令行定义。
+// 所有业务逻辑委托给 internal/app 包。
 package cli
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"strings"
-	"syscall"
 
-	"trade/internal/binance"
-	"trade/internal/chanlun"
+	"trade/internal/app"
 	"trade/internal/config"
-	"trade/internal/db"
-	"trade/internal/eventbus"
-	"trade/internal/log"
-	"trade/internal/types"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-// 默认配置常量。
 const (
 	defaultLogLevel = "info"
 	defaultLogJSON  = true
@@ -52,26 +43,12 @@ func newRootCmd() *cobra.Command {
 			return viper.BindPFlags(cmd.Flags())
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var cfg config.Config
-
-			cfg.LogLevel = viper.GetString("log-level")
-			cfg.LogJSON = viper.GetBool("log-json")
-			cfg.DBPath = viper.GetString("db")
-
-			syms := viper.GetString("symbols")
-			for _, s := range splitAndTrim(syms, ",") {
-				if s != "" {
-					cfg.Symbols = append(cfg.Symbols, s)
-				}
+			cfg := parseConfig()
+			sys, err := app.New(cfg)
+			if err != nil {
+				return err
 			}
-			if len(cfg.Symbols) == 0 {
-				return fmt.Errorf("至少需要一个交易对")
-			}
-
-			cfg.Interval = viper.GetString("interval")
-			cfg.WSURL = viper.GetString("ws-url")
-
-			return run(cfg)
+			return sys.Run(context.Background())
 		},
 	}
 
@@ -92,87 +69,23 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
-// run 实际启动逻辑，由 cobra RunE 调用。
-func run(cfg config.Config) error {
-	log.Init(log.Config{
-		Level:     cfg.LogLevel,
-		JSON:      cfg.LogJSON,
-		AddSource: true,
-		Output:    os.Stdout,
-	})
-	logger := log.Component("main")
-	logger.Info("启动缠论分析系统", "config", fmt.Sprintf("%+v", cfg))
+// parseConfig 从 viper 读取配置。
+func parseConfig() config.Config {
+	var cfg config.Config
 
-	bus := eventbus.New()
+	cfg.LogLevel = viper.GetString("log-level")
+	cfg.LogJSON = viper.GetBool("log-json")
+	cfg.DBPath = viper.GetString("db")
 
-	if err := os.MkdirAll(filepath.Dir(cfg.DBFile()), 0755); err != nil {
-		return fmt.Errorf("创建数据目录: %w", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	dbClient, err := db.NewClient(ctx, cfg.DBPath)
-	if err != nil {
-		return fmt.Errorf("初始化数据库: %w", err)
-	}
-	defer dbClient.Close()
-
-	dbSubID := bus.Subscribe(types.EventKlineClosed, dbClient.InsertClosedKlineHandler(ctx))
-	defer bus.Unsubscribe(types.EventKlineClosed, dbSubID)
-
-	containProc := chanlun.NewContainProcessor()
-	fractalProc := chanlun.NewFractalProcessor()
-
-	chanlunSubID := bus.Subscribe(types.EventKlineRealtime, func(evt types.KlineEvent) {
-		elements := containProc.Process(evt.Kline)
-		if len(elements) > 0 {
-			last := elements[len(elements)-1]
-			fractals := fractalProc.Process(last)
-			if len(fractals) > 0 && fractals[len(fractals)-1].Confirmed {
-				logger.Debug("识别到分型",
-					"type", fractals[len(fractals)-1].Type,
-					"high", fractals[len(fractals)-1].High,
-					"low", fractals[len(fractals)-1].Low,
-				)
-			}
+	for _, s := range splitAndTrim(viper.GetString("symbols"), ",") {
+		if s != "" {
+			cfg.Symbols = append(cfg.Symbols, s)
 		}
-	})
-	defer bus.Unsubscribe(types.EventKlineRealtime, chanlunSubID)
-
-	bus.Subscribe(types.EventKlineClosed, func(evt types.KlineEvent) {
-		elements := containProc.Process(evt.Kline)
-		if len(elements) > 0 {
-			fractalProc.Process(elements[len(elements)-1])
-		}
-	})
-
-	wsOpts := []binance.WSClientOption{}
-	if cfg.WSURL != "" {
-		wsOpts = append(wsOpts, binance.WithWSURL(cfg.WSURL))
-	}
-	wsClient := binance.NewWSClient(cfg.Symbols, cfg.Interval, bus, wsOpts...)
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		logger.Info("正在关闭...")
-		cancel()
-		wsClient.Stop()
-	}()
-
-	logger.Info("系统初始化完成，启动WebSocket流",
-		"symbols", cfg.Symbols,
-		"interval", cfg.Interval,
-	)
-
-	if err := wsClient.Start(ctx); err != nil && err != context.Canceled {
-		return err
 	}
 
-	logger.Info("系统已停止")
-	return nil
+	cfg.Interval = viper.GetString("interval")
+	cfg.WSURL = viper.GetString("ws-url")
+	return cfg
 }
 
 // envDefault 环境变量值或备用默认值。
