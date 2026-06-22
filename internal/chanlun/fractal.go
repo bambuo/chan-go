@@ -9,7 +9,8 @@ import (
 // 顶分型由连续三根非包含K线组成，其中中间元素的最高点最高。
 // 底分型由连续三根非包含K线组成，其中中间元素的最低点最低。
 //
-// 分型确认需要至少一个后续非包含K线出现且不否定该分型。
+// 分型确认条件：中间元素之后至少存在一个后续非包含元素。
+// （简化实现：仅检查后续元素是否存在，不验证"后续元素不否定该分型"。）
 type FractalProcessor struct {
 	elements []*types.ChanKline
 	fractals []types.Fractal
@@ -24,8 +25,20 @@ func NewFractalProcessor() *FractalProcessor {
 }
 
 // Process 接收一个非包含K线元素并更新分型分析。
+//
+// 注意：当包含处理器发生合并时，同一元素指针可能被再次传入（值已更新）。
+// 这种情况下不重复添加，但重新扫描分型以确保合并后的值被正确评估。
+//
 // 返回当前已识别的分型列表。
 func (p *FractalProcessor) Process(elem *types.ChanKline) []types.Fractal {
+	// 检测重复：相同的指针再次传入（包含合并导致的值更新）。
+	if len(p.elements) > 0 && p.elements[len(p.elements)-1] == elem {
+		// 值可能已变化，重新扫描最后3个元素。
+		if len(p.elements) >= 3 {
+			p.scanLast3()
+		}
+		return p.fractals
+	}
 	p.elements = append(p.elements, elem)
 	if len(p.elements) >= 3 {
 		p.scanLast3()
@@ -39,6 +52,10 @@ func (p *FractalProcessor) ProcessBatch(elems []*types.ChanKline) []types.Fracta
 	for _, e := range elems {
 		// 跳过已被包含的元素。
 		if e.Contained {
+			continue
+		}
+		// 与 Process 相同：跳过重复指针。
+		if len(p.elements) > 0 && p.elements[len(p.elements)-1] == e {
 			continue
 		}
 		p.elements = append(p.elements, e)

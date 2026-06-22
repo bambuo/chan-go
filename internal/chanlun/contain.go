@@ -21,9 +21,18 @@ import (
 //  4. 按方向合并：向上取较高高点和较高低点，向下取较低高点和较低低点。
 //  5. 合并后修改前一元素的 High/Low，新元素标记为已包含。
 //  6. 级联包含在后续 Process 调用中自然处理，无需回溯。
+//
+// 实时更新（流式场景）：
+//   - 同一 open_time 的 K 线再次传入时，更新已有元素的值并重新 resolve，
+//     不创建新元素。支持实时 K 线数据持续修正 High/Low。
 type ContainProcessor struct {
 	// 所有元素，包括被标记为包含（已合并）的元素。
 	elements []*types.ChanKline
+
+	// 最后一次 merge 的快照，用于实时更新时回退。
+	lastMergeTarget     *types.ChanKline
+	lastMergeTargetHigh float64
+	lastMergeTargetLow  float64
 }
 
 // NewContainProcessor 创建新的包含处理器。
@@ -34,8 +43,18 @@ func NewContainProcessor() *ContainProcessor {
 }
 
 // Process 处理一根原始K线并将其纳入非包含序列。
+//
+// 如果 raw 的 open_time 与最后一个元素相同（实时更新），
+// 则更新已有元素的值并重新 resolve，不创建新元素。
+// 否则作为新 K 线添加。
+//
 // 返回更新后的非包含元素列表。
 func (p *ContainProcessor) Process(raw *types.Kline) []*types.ChanKline {
+	// 同周期实时更新：不创建新元素，更新已有值。
+	if len(p.elements) > 0 && raw.OpenTime == p.elements[len(p.elements)-1].OpenTime {
+		return p.updateLast(raw)
+	}
+
 	ck := &types.ChanKline{
 		High:       raw.High.InexactFloat64(),
 		Low:        raw.Low.InexactFloat64(),
@@ -49,13 +68,78 @@ func (p *ContainProcessor) Process(raw *types.Kline) []*types.ChanKline {
 	}
 
 	p.elements = append(p.elements, ck)
-	p.resolve()
+	p.resolveLast()
 	return p.nonContained()
+}
+
+// updateLast 处理同周期 K 线实时更新。
+//
+// 策略：
+//  1. 更新最后一个元素的 RawHigh/RawLow（只扩展，不收缩）。
+//  2. 如果最后一个元素是非包含的，直接更新 High/Low 并重新 resolve。
+//  3. 如果最后一个元素是被包含的，先回退 target 的合并状态，
+//     然后将当前元素设为非包含，再重新 resolve。
+func (p *ContainProcessor) updateLast(raw *types.Kline) []*types.ChanKline {
+	last := p.elements[len(p.elements)-1]
+	newHigh := raw.High.InexactFloat64()
+	newLow := raw.Low.InexactFloat64()
+
+	// 更新原始值（只扩展）。
+	if newHigh > last.RawHigh {
+		last.RawHigh = newHigh
+	}
+	if newLow < last.RawLow {
+		last.RawLow = newLow
+	}
+
+	if !last.Contained {
+		// 非包含：直接更新 High/Low，重新 resolve。
+		if newHigh > last.High {
+			last.High = newHigh
+		}
+		if newLow < last.Low {
+			last.Low = newLow
+		}
+		p.resolveLast()
+		return p.nonContained()
+	}
+
+	// 被包含：回退 target 的合并状态。
+	if p.lastMergeTarget == last {
+		// 不应发生：last 是自己 merge 的 target。
+		p.resolveLast()
+		return p.nonContained()
+	}
+	if p.lastMergeTarget != nil && p.lastMergeTarget == p.prevNonContainedTarget(len(p.elements)-1) {
+		// 回退 target 到合并前的值。
+		p.lastMergeTarget.High = p.lastMergeTargetHigh
+		p.lastMergeTarget.Low = p.lastMergeTargetLow
+		p.lastMergeTarget.MergedFrom -= last.MergedFrom
+	}
+
+	// 将 last 设为非包含，使用当前最新值。
+	last.Contained = false
+	last.High = newHigh
+	last.Low = newLow
+	last.MergedFrom = 1
+
+	p.resolveLast()
+	return p.nonContained()
+}
+
+// prevNonContainedTarget 返回 i 之前最近的非包含元素（同 prevNonContainedIndex）。
+func (p *ContainProcessor) prevNonContainedTarget(i int) *types.ChanKline {
+	j := p.prevNonContainedIndex(i)
+	if j < 0 {
+		return nil
+	}
+	return p.elements[j]
 }
 
 // Reset 清除所有已处理的元素。
 func (p *ContainProcessor) Reset() {
 	p.elements = make([]*types.ChanKline, 0)
+	p.lastMergeTarget = nil
 }
 
 // nonContained 返回非包含元素的序列。
@@ -74,39 +158,32 @@ func (p *ContainProcessor) Elements() []*types.ChanKline {
 	return p.nonContained()
 }
 
-// resolve 标准缠论包含处理（从左到右顺序递进）。
+// resolveLast 检查最后一个元素与前一非包含元素的包含关系。
 //
 // 每次只处理最新添加的元素，检查其与最近一个非包含元素的关系。
 // 如果被包含，则确定方向后进行合并；否则不做任何操作。
-// 级联包含在后续 Process 调用中自然处理，无需回溯扫描。
-func (p *ContainProcessor) resolve() {
+func (p *ContainProcessor) resolveLast() {
 	n := len(p.elements)
 	if n < 2 {
 		return
 	}
 
-	// 获取最新添加的元素。
 	curr := p.elements[n-1]
 	if curr.Contained {
 		return
 	}
 
-	// 找到前一个非包含元素的索引。
 	prevIdx := p.prevNonContainedIndex(n - 1)
 	if prevIdx < 0 {
 		return
 	}
 	prev := p.elements[prevIdx]
 
-	// 检查是否被包含。
 	if !isContained(curr, prev) {
 		return
 	}
 
-	// 被包含，确定方向。
 	dir := p.resolveDirection(prevIdx)
-
-	// 合并：prev 吸收 curr。
 	p.merge(prev, curr, dir)
 }
 
@@ -118,7 +195,6 @@ func (p *ContainProcessor) resolve() {
 func (p *ContainProcessor) resolveDirection(prevIdx int) types.ChanDirection {
 	prevPrevIdx := p.prevNonContainedIndex(prevIdx)
 	if prevPrevIdx < 0 {
-		// 前两根K线包含，按向上处理。
 		return types.DirectionUp
 	}
 	dir := p.determineDirection(p.elements[prevPrevIdx], p.elements[prevIdx])
@@ -155,10 +231,15 @@ func (p *ContainProcessor) determineDirection(a, b *types.ChanKline) types.ChanD
 //   - 向上或方向不明：取较高高点和较高低点。
 //   - 向下：取较低高点和较低低点。
 //
-// 合并后，当前元素被标记为已包含。
+// 合并后，当前元素被标记为已包含。同时记录合并快照，
+// 以便实时更新时回退。
 func (p *ContainProcessor) merge(target, curr *types.ChanKline, dir types.ChanDirection) {
+	// 记录快照以供实时更新回退。
+	p.lastMergeTarget = target
+	p.lastMergeTargetHigh = target.High
+	p.lastMergeTargetLow = target.Low
+
 	if dir == types.DirectionDown {
-		// 向下：取较低高点和较低低点。
 		if curr.High < target.High {
 			target.High = curr.High
 		}
@@ -166,7 +247,6 @@ func (p *ContainProcessor) merge(target, curr *types.ChanKline, dir types.ChanDi
 			target.Low = curr.Low
 		}
 	} else {
-		// DirectionUp / DirectionNone：取较高高点和较高低点。
 		if curr.High > target.High {
 			target.High = curr.High
 		}
@@ -180,10 +260,6 @@ func (p *ContainProcessor) merge(target, curr *types.ChanKline, dir types.ChanDi
 }
 
 // isContained 检查元素 curr 是否与元素 prev 存在包含关系。
-//
-// 包含关系定义（对称）：
-//   - curr的高点≤prev的高点 且 curr的低点≥prev的低点（curr在prev内部）
-//   - 或 curr的高点≥prev的高点 且 curr的低点≤prev的低点（prev在curr内部）
 func isContained(curr, prev *types.ChanKline) bool {
 	return (curr.High <= prev.High && curr.Low >= prev.Low) ||
 		(curr.High >= prev.High && curr.Low <= prev.Low)

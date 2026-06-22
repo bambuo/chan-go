@@ -581,6 +581,150 @@ func TestContain_IsIdempotent(t *testing.T) {
 	}
 }
 
+// --- 流式实时更新测试 ---
+
+// TestContain_RealtimeUpdateNonContained 验证同周期实时更新非包含元素。
+func TestContain_RealtimeUpdateNonContained(t *testing.T) {
+	p := NewContainProcessor()
+
+	p.Process(rk(10, 10, 5, 8, 1))  // K1(10,5)
+	p.Process(rk(12, 15, 8, 13, 2)) // K2(15,8) 向上
+
+	// 实时更新K2: high=18, low=7（高点变高、低点变低，仍然不包含K1）
+	result := p.Process(rk(14, 18, 7, 15, 2))
+
+	if len(result) != 2 {
+		t.Fatalf("期望2个非包含元素，实际 %d", len(result))
+	}
+	if result[1].High != 18 {
+		t.Errorf("期望high=18，实际 %.1f", result[1].High)
+	}
+	if result[1].Low != 7 {
+		t.Errorf("期望low=7，实际 %.1f", result[1].Low)
+	}
+	if len(p.elements) != 2 {
+		t.Errorf("实时更新不应增加元素数量，实际 %d", len(p.elements))
+	}
+}
+
+// TestContain_RealtimeUpdateContainByLowDrop 验证实时更新低点下移导致被包含。
+//
+// K1(10,5), K2(15,8) 向上不包含。
+// 实时更新K2: low=3 → K2(15,3) vs K1(10,5): 15>=10且3<=5 → 包含！
+//
+//	方向K1→K2向上。向上合并K1: high=max(10,15)=15, low=max(5,3)=5 → K1(15,5).
+func TestContain_RealtimeUpdateContainByLowDrop(t *testing.T) {
+	p := NewContainProcessor()
+
+	p.Process(rk(10, 10, 5, 8, 1))  // K1(10,5)
+	p.Process(rk(12, 15, 8, 13, 2)) // K2(15,8) 向上
+
+	// 实时更新K2: low=3
+	result := p.Process(rk(11, 15, 3, 12, 2))
+
+	if len(result) != 1 {
+		t.Fatalf("包含后期望1个非包含元素，实际 %d", len(result))
+	}
+	if result[0].High != 15 || result[0].Low != 5 {
+		t.Errorf("期望K1(15,5)，实际 (%.1f,%.1f)", result[0].High, result[0].Low)
+	}
+	if len(p.elements) != 2 {
+		t.Errorf("实时更新不应增加元素数量，实际 %d", len(p.elements))
+	}
+}
+
+// TestContain_RealtimeBreakContainment 验证实时更新使被包含元素变为非包含。
+//
+// K1(10,5), K2(15,8), K3(14,9): K3被K2包含 → 向上合并 K2(15,9)
+// 实时更新K3: low=6 → K3(14,6) vs K2(15,9): 14<=15且6>=9? No. 14>=15? No. → 不包含！
+//
+//	回退K2到(15,8), K3设为非包含(14,6)
+func TestContain_RealtimeBreakContainment(t *testing.T) {
+	p := NewContainProcessor()
+
+	p.Process(rk(10, 10, 5, 8, 1))  // K1(10,5)
+	p.Process(rk(12, 15, 8, 13, 2)) // K2(15,8) 向上
+	p.Process(rk(14, 14, 9, 13, 3)) // K3(14,9) 被K2包含 → 向上合并K2(15,9)
+
+	elems := p.Elements()
+	if len(elems) != 2 {
+		t.Fatalf("K3包含后期望2个非包含元素，实际 %d", len(elems))
+	}
+	if elems[1].High != 15 || elems[1].Low != 9 {
+		t.Errorf("K2合并后期望(15,9)，实际 (%.1f,%.1f)", elems[1].High, elems[1].Low)
+	}
+
+	// 实时更新K3: low=6 → 不包含K2
+	result := p.Process(rk(11, 14, 6, 12, 3))
+
+	if len(result) != 3 {
+		t.Fatalf("突破包含后期望3个非包含元素，实际 %d", len(result))
+	}
+	// K2回到原始值(15,8)
+	if result[1].High != 15 || result[1].Low != 8 {
+		t.Errorf("K2回退后期望(15,8)，实际 (%.1f,%.1f)", result[1].High, result[1].Low)
+	}
+	// K3独立(14,6)
+	if result[2].High != 14 || result[2].Low != 6 {
+		t.Errorf("K3后期望(14,6)，实际 (%.1f,%.1f)", result[2].High, result[2].Low)
+	}
+}
+
+// TestContain_RealtimeBreakWithCleanRevert 验证回退后K2不被K1级联包含。
+//
+// K1(10,5), K2(15,8), K3(12,7): K3被K2包含 → 向上合并K2(15,8)
+//
+//	（12<=15且7>=8? No. 12>=15? No. K3与K2不包含！）
+//
+// 重新设计：K1(10,5), K2(20,8), K3(12,9): 方向K1→K2向上，K2→K3向下。
+//
+//	K3(12,9) vs K2(20,8): 12<=20且9>=8 → 包含！方向K1→K2向上。
+//	向上合并K2(20,9). K3.Contained=true.
+//
+// 实时更新K3: high=15, low=12 → K3(15,12). 15<=20且12>=9 → 仍包含。
+//
+//	回退K2到(20,8), K3(15,12). resolveLast: 15<=20且12>=8 → 包含！
+//	向上合并K2(20,12). 又回去了。
+//
+// 再设计：需要K3更新后与K2不包含。
+// K1(10,5), K2(20,8)... K3(15,6) contained by K2 (15<=20且6>=8? No. 15>=20? No.) Not contained.
+//
+// 需要K3真正被K2包含：K3(18,9) vs K2(20,8): 18<=20且9>=8 → contained!
+// 向上合并K2(20,9).
+// 更新K3: low=5 → K3(18,5) vs K2(20,9): 18<=20且5>=9? No. 18>=20? No. → 不包含！
+// 回退K2到(20,8). K3(18,5). resolveLast: 不包含。
+//
+//	K2回退(20,8) vs K1(10,5): 20>=10且8>=5? 20>10, 8>5 → 不包含。
+//	4个非包含元素？不对。回退后的K2(20,8) vs K1(10,5): 不包含，因为20>10且8>5 → DirectionUp, not contained.
+//	所以最终: [K1(10,5), K2(20,8), K3(18,5)]. 3个。✅
+func TestContain_RealtimeBreakWithCleanRevert(t *testing.T) {
+	p := NewContainProcessor()
+
+	p.Process(rk(10, 10, 5, 8, 1))  // K1(10,5)
+	p.Process(rk(15, 20, 8, 18, 2)) // K2(20,8) 向上
+	p.Process(rk(17, 18, 9, 18, 3)) // K3(18,9) 被K2包含 → 向上合并K2(20,9)
+
+	elems := p.Elements()
+	if len(elems) != 2 {
+		t.Fatalf("K3包含后期望2个非包含元素，实际 %d", len(elems))
+	}
+
+	// 实时更新K3: low=5 → 不包含K2
+	result := p.Process(rk(15, 18, 5, 16, 3))
+
+	if len(result) != 3 {
+		t.Fatalf("突破包含后期望3个非包含元素，实际 %d", len(result))
+	}
+	// K2回到原始值(20,8)
+	if result[1].High != 20 || result[1].Low != 8 {
+		t.Errorf("K2回退后期望(20,8)，实际 (%.1f,%.1f)", result[1].High, result[1].Low)
+	}
+	// K3独立(18,5)
+	if result[2].High != 18 || result[2].Low != 5 {
+		t.Errorf("K3后期望(18,5)，实际 (%.1f,%.1f)", result[2].High, result[2].Low)
+	}
+}
+
 // --- 性能测试 ---
 
 // BenchmarkContain_Simple 基准测试：1000根K线无包含。

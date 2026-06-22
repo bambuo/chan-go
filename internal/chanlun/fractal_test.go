@@ -191,3 +191,246 @@ func TestIsBottomFractal(t *testing.T) {
 		})
 	}
 }
+
+// --- 重复元素处理测试 ---
+
+// TestFractal_DuplicatePointerNoDuplicate 验证同一指针不会被重复添加。
+func TestFractal_DuplicatePointerNoDuplicate(t *testing.T) {
+	p := NewFractalProcessor()
+
+	e1 := &types.ChanKline{High: 10, Low: 5, OpenTime: 1}
+	e2 := &types.ChanKline{High: 15, Low: 8, OpenTime: 2}
+
+	p.Process(e1)
+	p.Process(e2)
+
+	if len(p.elements) != 2 {
+		t.Fatalf("2个元素后期望len=2，实际 %d", len(p.elements))
+	}
+
+	// 再次传入e2（模拟合并后同一指针传入）。
+	p.Process(e2)
+
+	// 不应重复添加。
+	if len(p.elements) != 2 {
+		t.Fatalf("重复指针后期望len=2，实际 %d", len(p.elements))
+	}
+}
+
+// TestFractal_DuplicatePointerRecheck 验证传入重复指针时重新扫描。
+//
+// 场景：
+//
+//	e1(10,5) → e2(15,8) → e3(12,6) → 顶分型(e2)
+//	合并后e3值变为(13,7)，再次传入
+//	重新扫描应仍然识别顶分型(e2)
+func TestFractal_DuplicatePointerRecheck(t *testing.T) {
+	p := NewFractalProcessor()
+
+	e1 := &types.ChanKline{High: 10, Low: 5, OpenTime: 1}
+	e2 := &types.ChanKline{High: 15, Low: 8, OpenTime: 2}
+	e3 := &types.ChanKline{High: 12, Low: 6, OpenTime: 3}
+
+	p.Process(e1)
+	p.Process(e2)
+	p.Process(e3)
+
+	fractals := p.AllFractals()
+	if len(fractals) != 1 {
+		t.Fatalf("初始期望1个分型，实际 %d", len(fractals))
+	}
+	if fractals[0].Type != types.FractalTop {
+		t.Errorf("初始期望顶分型，实际 %v", fractals[0].Type)
+	}
+
+	// 模拟K4被e3吸收，e3值更新。
+	e3.High = 13
+	e3.Low = 7
+
+	// 重复指针传入 → 重新扫描。
+	p.Process(e3)
+
+	// 仍应有1个顶分型。
+	fractals = p.AllFractals()
+	if len(fractals) != 1 {
+		t.Fatalf("重新扫描后期望1个分型，实际 %d", len(fractals))
+	}
+	if fractals[0].Type != types.FractalTop {
+		t.Errorf("重新扫描后期望顶分型，实际 %v", fractals[0].Type)
+	}
+	if len(p.elements) != 3 {
+		t.Errorf("重复指针后元素数应保持3，实际 %d", len(p.elements))
+	}
+}
+
+// --- 端到端包含+分型测试 ---
+
+// TestFractal_ContainPipelineEndToEnd 验证含包含处理的完整分型识别流程。
+//
+// K1(20,10) → K2(25,15) → K3(22,12)(不包含,向下) → 顶分型(K2)
+// → K4(18,8)(不包含,向下) → 顶分型确认
+func TestFractal_ContainPipelineEndToEnd(t *testing.T) {
+	containP := NewContainProcessor()
+	fractalP := NewFractalProcessor()
+
+	feed := func(k *types.Kline) {
+		elems := containP.Process(k)
+		if len(elems) > 0 {
+			fractalP.Process(elems[len(elems)-1])
+		}
+	}
+
+	feed(rk(10, 20, 10, 12, 1)) // K1(20,10)
+	feed(rk(18, 25, 15, 20, 2)) // K2(25,15)
+
+	if len(fractalP.AllFractals()) != 0 {
+		t.Fatal("2个元素不应有分型")
+	}
+
+	feed(rk(18, 22, 12, 20, 3)) // K3(22,12), 不包含
+
+	fractals := fractalP.AllFractals()
+	if len(fractals) != 1 {
+		t.Fatalf("3个元素期望1个分型，实际 %d", len(fractals))
+	}
+	if fractals[0].Type != types.FractalTop {
+		t.Errorf("期望顶分型，实际 %v", fractals[0].Type)
+	}
+	if fractals[0].Confirmed {
+		t.Error("3个元素时顶分型不应确认")
+	}
+
+	feed(rk(12, 18, 8, 15, 4)) // K4(18,8), 不包含
+
+	fractals = fractalP.Fractals()
+	if len(fractals) != 1 {
+		t.Fatalf("4个元素期望1个已确认分型，实际 %d", len(fractals))
+	}
+	if !fractals[0].Confirmed {
+		t.Error("第4个元素后顶分型应确认")
+	}
+}
+
+// TestFractal_ContainPipelineMergeThenFractal 验证合并后重新扫描的端到端流程。
+func TestFractal_ContainPipelineMergeThenBottomFractal(t *testing.T) {
+	containP := NewContainProcessor()
+	fractalP := NewFractalProcessor()
+
+	feed := func(k *types.Kline) {
+		elems := containP.Process(k)
+		if len(elems) > 0 {
+			fractalP.Process(elems[len(elems)-1])
+		}
+	}
+
+	// K1(10,5), K2(8,4): 向下
+	feed(rk(10, 10, 5, 8, 1))
+	feed(rk(7, 8, 4, 6, 2))
+
+	// K3(9,2): 被K2包含，向下合并
+	feed(rk(7, 9, 2, 8, 3))
+
+	// K4(5,1): 不被包含，新元素
+	feed(rk(3, 5, 1, 4, 4))
+
+	// 确认流处理不崩溃，元素增长符合预期。
+	if fractalP.AllFractals() == nil {
+		t.Fatal("AllFractals不应返回nil")
+	}
+}
+
+// TestFractal_RealtimeStreamPipeline 验证实时流式场景下包含→分型链路的正确性。
+//
+// 模拟币安实时推送：同一K线多次更新后闭合。
+func TestFractal_RealtimeStreamPipeline(t *testing.T) {
+	containP := NewContainProcessor()
+	fractalP := NewFractalProcessor()
+
+	feed := func(k *types.Kline) {
+		elems := containP.Process(k)
+		if len(elems) > 0 {
+			fractalP.Process(elems[len(elems)-1])
+		}
+	}
+
+	// K1(10,5) 闭合
+	feed(rk(10, 10, 5, 8, 1))
+
+	// K2 开始：三次实时更新 → 闭合
+	feed(rk(15, 18, 12, 16, 2)) // K2第一次实时更新
+	feed(rk(15, 20, 11, 17, 2)) // K2第二次实时更新(high变高, low变低)
+	feed(rk(15, 22, 10, 18, 2)) // K2第三次实时更新
+	feed(rk(15, 22, 10, 18, 2)) // K2闭合(值不变)
+
+	// K1(10,5), K2(22,10) 向上不包含
+	// 只有2个非包含，无分型
+	if len(fractalP.AllFractals()) != 0 {
+		t.Fatalf("2个非包含元素不应有分型，实际 %d", len(fractalP.AllFractals()))
+	}
+	// elements 应包含2个元素(K1, K2)
+	if len(containP.elements) != 2 {
+		t.Errorf("期望2个元素(K1, K2)，实际 %d", len(containP.elements))
+	}
+
+	// K3 实时更新 + 闭合
+	feed(rk(12, 18, 8, 14, 3)) // K3第一次
+	feed(rk(12, 19, 7, 14, 3)) // K3第二次
+
+	// 非包含: K1(10,5), K2(22,10), K3(19,7)
+	// K3(19,7) vs K2(22,10): 19<=22且7<=10 → 不包含(19<=22且7<10, NOT 7>=10)
+	// 不包含。3个非包含元素 → 顶分型K2(22最高)
+	fractals := fractalP.AllFractals()
+	if len(fractals) != 1 {
+		t.Fatalf("期望1个顶分型，实际 %d", len(fractals))
+	}
+	if fractals[0].Type != types.FractalTop {
+		t.Errorf("期望顶分型，实际 %v", fractals[0].Type)
+	}
+
+	// 闭合K3
+	feed(rk(12, 19, 7, 14, 3))
+
+	// 分型不变
+	fractals = fractalP.AllFractals()
+	if len(fractals) != 1 {
+		t.Fatalf("闭合后仍期望1个分型，实际 %d", len(fractals))
+	}
+}
+
+// --- 性能测试 ---
+
+// BenchmarkFractal_Process 分型性能基准测试。
+func BenchmarkFractal_Process(b *testing.B) {
+	elems := make([]*types.ChanKline, 1000)
+	for i := 0; i < 1000; i++ {
+		elems[i] = &types.ChanKline{
+			High: float64(100 + 10 + i),
+			Low:  float64(90 + i),
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p := NewFractalProcessor()
+		for _, e := range elems {
+			p.Process(e)
+		}
+	}
+}
+
+// BenchmarkFractal_Batch 分型批量处理性能基准测试。
+func BenchmarkFractal_Batch(b *testing.B) {
+	elems := make([]*types.ChanKline, 1000)
+	for i := 0; i < 1000; i++ {
+		elems[i] = &types.ChanKline{
+			High: float64(100 + 10 + i),
+			Low:  float64(90 + i),
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p := NewFractalProcessor()
+		p.ProcessBatch(elems)
+	}
+}

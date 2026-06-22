@@ -62,8 +62,8 @@ func (b *Bus) Unsubscribe(eventType types.KlineEventType, id int64) {
 	b.logger.Debug("取消订阅者", "event_type", eventType, "sub_id", id)
 }
 
-// Publish 将事件同步分发给所有匹配的订阅者。
-// 每个处理器在独立的协程中调用，单个慢速处理器不会阻塞其他处理器。
+// Publish 将事件顺序分发给所有匹配的订阅者。
+// 所有处理器在同一协程中同步调用，保证处理顺序。
 // 调用者发布后不应再修改事件。
 func (b *Bus) Publish(event types.KlineEvent) {
 	b.mu.RLock()
@@ -75,11 +75,7 @@ func (b *Bus) Publish(event types.KlineEvent) {
 	}
 
 	for id, handler := range handlers {
-		h := handler
-		sid := id
-		go func() {
-			recoverFunc(event, h, sid)
-		}()
+		recoverFunc(event, handler, id)
 	}
 
 	b.logger.Debug("事件已发布",
