@@ -427,10 +427,205 @@ func BenchmarkFractal_Batch(b *testing.B) {
 			Low:  float64(90 + i),
 		}
 	}
+}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+// TestIsTopFractal_Strict 验证严格顶分型的双条件判定（高点最高 且 低点也最高）。
+func TestIsTopFractal_Strict(t *testing.T) {
+	tests := []struct {
+		name             string
+		first, mid, last *types.ChanKline
+		wantStrict       bool // 严格模式（双条件AND）
+		wantLoose        bool // 宽松模式（仅高条件）
+	}{
+		{
+			name:  "典型顶分型-双条件都满足",
+			first: ck(15, 10), mid: ck(20, 12), last: ck(17, 9),
+			wantStrict: true, wantLoose: true,
+		},
+		{
+			name: "高点最高但低点不是最高-严格拒绝",
+			// first(15,10), mid(20,8), last(17,12)
+			// tight: 20>15 && 20>17 ✓ |  8>10? ✗ 8>12? ✗ → 严格拒绝
+			first: ck(15, 10), mid: ck(20, 8), last: ck(17, 12),
+			wantStrict: false, wantLoose: true,
+		},
+		{
+			name:  "低点最高但高点不是最高",
+			first: ck(15, 8), mid: ck(13, 12), last: ck(17, 9),
+			wantStrict: false, wantLoose: false,
+		},
+		{
+			name:  "高点相等",
+			first: ck(15, 8), mid: ck(15, 12), last: ck(17, 9),
+			wantStrict: false, wantLoose: false,
+		},
+		{
+			name:  "完全不符合",
+			first: ck(20, 5), mid: ck(15, 8), last: ck(18, 6),
+			wantStrict: false, wantLoose: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTopFractal(tt.first, tt.mid, tt.last); got != tt.wantStrict {
+				t.Errorf("IsTopFractal(严格): 期望 %v, 实际 %v", tt.wantStrict, got)
+			}
+			if got := IsTopFractalLoose(tt.first, tt.mid, tt.last); got != tt.wantLoose {
+				t.Errorf("IsTopFractalLoose(宽松): 期望 %v, 实际 %v", tt.wantLoose, got)
+			}
+		})
+	}
+}
+
+// TestIsBottomFractal_Strict 验证严格底分型的双条件判定（低点最低 且 高点也最低）。
+func TestIsBottomFractal_Strict(t *testing.T) {
+	tests := []struct {
+		name             string
+		first, mid, last *types.ChanKline
+		wantStrict       bool
+		wantLoose        bool
+	}{
+		{
+			name:  "典型底分型-双条件都满足",
+			first: ck(20, 15), mid: ck(15, 8), last: ck(18, 12),
+			wantStrict: true, wantLoose: true,
+		},
+		{
+			name: "低点最低但高点不是最低-严格拒绝",
+			// first(15,20), mid(12,5), last(10,18)
+			// loose: 5<20 && 5<18 ✓ | strict: mid.H(12)<first.H(15)? ✓ 12<last.H(10)? ✗ → 严格拒绝
+			first: ck(15, 20), mid: ck(12, 5), last: ck(10, 18),
+			wantStrict: false, wantLoose: true,
+		},
+		{
+			name:  "高点最低但低点不是最低",
+			first: ck(20, 5), mid: ck(12, 8), last: ck(15, 12),
+			wantStrict: false, wantLoose: false,
+		},
+		{
+			name:  "低点相等",
+			first: ck(20, 5), mid: ck(15, 5), last: ck(18, 8),
+			wantStrict: false, wantLoose: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsBottomFractal(tt.first, tt.mid, tt.last); got != tt.wantStrict {
+				t.Errorf("IsBottomFractal(严格): 期望 %v, 实际 %v", tt.wantStrict, got)
+			}
+			if got := IsBottomFractalLoose(tt.first, tt.mid, tt.last); got != tt.wantLoose {
+				t.Errorf("IsBottomFractalLoose(宽松): 期望 %v, 实际 %v", tt.wantLoose, got)
+			}
+		})
+	}
+}
+
+// TestFractal_StrictVsLooseOutputDiff 验证严格/宽松模式在完整流程中产生不同分型输出。
+//
+// 场景：形成顶分型候选，但严格模式因低点条件不满足而拒绝，宽松模式接受。
+// first(15,10), mid(20,8), last(17,12)
+//   - 宽松：mid.H(20)>first.H(15) && mid.H(20)>last.H(17) → 顶分型
+//   - 严格：还要 mid.L(8)>first.L(10)? No → 拒绝
+func TestFractal_StrictVsLooseOutputDiff(t *testing.T) {
+	t.Run("严格模式拒绝单条件顶分型", func(t *testing.T) {
 		p := NewFractalProcessor()
-		p.ProcessBatch(elems)
+		p.SetStrictFractalMode(true) // 默认已是严格
+
+		// first(15,10), mid(20,8), last(17,12)
+		// mid.H最高但mid.L不是最高 → 严格拒绝
+		elems := []*types.ChanKline{
+			{High: 15, Low: 10, OpenTime: 1},
+			{High: 20, Low: 8, OpenTime: 2},
+			{High: 17, Low: 12, OpenTime: 3},
+			{High: 16, Low: 9, OpenTime: 4}, // 第4个确认
+		}
+		result := p.ProcessBatch(elems)
+
+		if len(result) != 0 {
+			t.Errorf("严格模式期望0个分型（低点条件不满足），实际 %d", len(result))
+		}
+	})
+
+	t.Run("宽松模式接受单条件顶分型", func(t *testing.T) {
+		p := NewFractalProcessor()
+		p.SetStrictFractalMode(false)
+
+		// 相同的K线
+		elems := []*types.ChanKline{
+			{High: 15, Low: 10, OpenTime: 1},
+			{High: 20, Low: 8, OpenTime: 2},
+			{High: 17, Low: 12, OpenTime: 3},
+			{High: 16, Low: 9, OpenTime: 4},
+		}
+		result := p.ProcessBatch(elems)
+
+		if len(result) != 1 {
+			t.Fatalf("宽松模式期望1个顶分型，实际 %d", len(result))
+		}
+		if result[0].Type != types.FractalTop {
+			t.Errorf("期望顶分型，实际 %v", result[0].Type)
+		}
+		if !result[0].Confirmed {
+			t.Error("第4个元素后分型应被确认")
+		}
+	})
+
+	t.Run("宽松模式接受单条件底分型", func(t *testing.T) {
+		p := NewFractalProcessor()
+		p.SetStrictFractalMode(false)
+
+		// first(15,20), mid(12,5), last(10,18)
+		// mid.L最低但mid.H不是最低 → 宽松接受, 严格拒绝
+		elems := []*types.ChanKline{
+			{High: 15, Low: 20, OpenTime: 1},
+			{High: 12, Low: 5, OpenTime: 2},
+			{High: 10, Low: 18, OpenTime: 3},
+			{High: 13, Low: 8, OpenTime: 4},
+		}
+		result := p.ProcessBatch(elems)
+
+		if len(result) != 1 {
+			t.Fatalf("宽松模式期望1个底分型，实际 %d", len(result))
+		}
+		if result[0].Type != types.FractalBottom {
+			t.Errorf("期望底分型，实际 %v", result[0].Type)
+		}
+	})
+
+	t.Run("严格模式拒绝单条件底分型", func(t *testing.T) {
+		p := NewFractalProcessor()
+		p.SetStrictFractalMode(true)
+
+		// 相同的K线
+		elems := []*types.ChanKline{
+			{High: 15, Low: 20, OpenTime: 1},
+			{High: 12, Low: 5, OpenTime: 2},
+			{High: 10, Low: 18, OpenTime: 3},
+			{High: 13, Low: 8, OpenTime: 4},
+		}
+		result := p.ProcessBatch(elems)
+
+		if len(result) != 0 {
+			t.Errorf("严格模式期望0个分型（高点条件不满足），实际 %d", len(result))
+		}
+	})
+}
+
+// TestFractal_StrictModeExists 验证默认构造的处理器为严格模式。
+func TestFractal_StrictModeDefaults(t *testing.T) {
+	p := NewFractalProcessor()
+	if !p.StrictFractal {
+		t.Error("NewFractalProcessor 默认应为严格模式")
+	}
+
+	// 严格模式下：高点条件满足但低点不满足 → 应无分型
+	elems := []*types.ChanKline{
+		{High: 15, Low: 10, OpenTime: 1},
+		{High: 20, Low: 8, OpenTime: 2},
+		{High: 17, Low: 12, OpenTime: 3},
+	}
+	result := p.ProcessBatch(elems)
+	if len(result) != 0 {
+		t.Error("严格模式下单条件顶分型不应被识别")
 	}
 }

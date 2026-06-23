@@ -11,17 +11,34 @@ import (
 //
 // 分型确认条件：中间元素之后至少存在一个后续非包含元素。
 // （简化实现：仅检查后续元素是否存在，不验证"后续元素不否定该分型"。）
+//
+// 模式说明：
+//
+//	StrictFractal=true（默认，算法文档/缠论原文）：
+//	  顶分型要求中间K线高点最高 且 低点也最高（AND）
+//	  底分型要求中间K线低点最低 且 高点也最低（AND）
+//	StrictFractal=false（简化版本）：
+//	  顶分型仅要求中间K线高点最高（单向）
+//	  底分型仅要求中间K线低点最低（单向）
 type FractalProcessor struct {
-	elements []*types.ChanKline
-	fractals []types.Fractal
+	elements      []*types.ChanKline
+	fractals      []types.Fractal
+	StrictFractal bool // true=严格双条件(默认), false=宽松单条件
 }
 
-// NewFractalProcessor 创建新的分型处理器。
+// NewFractalProcessor 创建新的分型处理器（默认严格模式）。
 func NewFractalProcessor() *FractalProcessor {
 	return &FractalProcessor{
-		elements: make([]*types.ChanKline, 0),
-		fractals: make([]types.Fractal, 0),
+		elements:      make([]*types.ChanKline, 0),
+		fractals:      make([]types.Fractal, 0),
+		StrictFractal: true,
 	}
+}
+
+// SetStrictFractalMode 设置分型判定模式。
+// true=严格双条件AND（算法文档/缠论原文），false=宽松单条件OR。
+func (p *FractalProcessor) SetStrictFractalMode(strict bool) {
+	p.StrictFractal = strict
 }
 
 // Process 接收一个非包含K线元素并更新分型分析。
@@ -103,8 +120,8 @@ func (p *FractalProcessor) scanLast3() {
 	mid := p.elements[n-2]
 	first := p.elements[n-3]
 
-	// 检查顶分型：中间元素高点最高。
-	if mid.High > first.High && mid.High > last.High {
+	// 检查顶分型：中间元素高点最高（严格模式下还要求低点也最高）。
+	if isTopFractal(first, mid, last, p.StrictFractal) {
 		// 确保不重复注册同一分型。
 		if len(p.fractals) == 0 || p.fractals[len(p.fractals)-1].Index != n-2 {
 			mid.FractalType = types.FractalTop
@@ -118,8 +135,8 @@ func (p *FractalProcessor) scanLast3() {
 		}
 	}
 
-	// 检查底分型：中间元素低点最低。
-	if mid.Low < first.Low && mid.Low < last.Low {
+	// 检查底分型：中间元素低点最低（严格模式下还要求高点也最低）。
+	if isBottomFractal(first, mid, last, p.StrictFractal) {
 		if len(p.fractals) == 0 || p.fractals[len(p.fractals)-1].Index != n-2 {
 			mid.FractalType = types.FractalBottom
 			p.fractals = append(p.fractals, types.Fractal{
@@ -151,21 +168,43 @@ func (p *FractalProcessor) updateConfirmations(n int) {
 }
 
 // isTopFractal 检查三个元素是否形成顶分型。
-func isTopFractal(first, mid, last *types.ChanKline) bool {
+// strict=true：要求中间高点最高 且 中间低点也最高（AND，算法文档/缠论原文）。
+// strict=false：仅要求中间高点最高（单向）。
+func isTopFractal(first, mid, last *types.ChanKline, strict bool) bool {
+	if strict {
+		return mid.High > first.High && mid.High > last.High &&
+			mid.Low > first.Low && mid.Low > last.Low
+	}
 	return mid.High > first.High && mid.High > last.High
 }
 
-// IsTopFractal 公开版本，用于测试。
+// IsTopFractal 公开版本，使用严格模式（算法文档/缠论原文兼容）。
 func IsTopFractal(first, mid, last *types.ChanKline) bool {
-	return isTopFractal(first, mid, last)
+	return isTopFractal(first, mid, last, true)
+}
+
+// IsTopFractalLoose 公开版本，使用宽松模式。
+func IsTopFractalLoose(first, mid, last *types.ChanKline) bool {
+	return isTopFractal(first, mid, last, false)
 }
 
 // isBottomFractal 检查三个元素是否形成底分型。
-func isBottomFractal(first, mid, last *types.ChanKline) bool {
+// strict=true：要求中间低点最低 且 中间高点也最低（AND，算法文档/缠论原文）。
+// strict=false：仅要求中间低点最低（单向）。
+func isBottomFractal(first, mid, last *types.ChanKline, strict bool) bool {
+	if strict {
+		return mid.Low < first.Low && mid.Low < last.Low &&
+			mid.High < first.High && mid.High < last.High
+	}
 	return mid.Low < first.Low && mid.Low < last.Low
 }
 
-// IsBottomFractal 公开版本，用于测试。
+// IsBottomFractal 公开版本，使用严格模式（算法文档/缠论原文兼容）。
 func IsBottomFractal(first, mid, last *types.ChanKline) bool {
-	return isBottomFractal(first, mid, last)
+	return isBottomFractal(first, mid, last, true)
+}
+
+// IsBottomFractalLoose 公开版本，使用宽松模式。
+func IsBottomFractalLoose(first, mid, last *types.ChanKline) bool {
+	return isBottomFractal(first, mid, last, false)
 }
