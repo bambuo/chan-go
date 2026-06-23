@@ -28,8 +28,8 @@ func TestFractal_TopFractal(t *testing.T) {
 	if result[0].High != 20 {
 		t.Errorf("期望high=20，实际 %.1f", result[0].High)
 	}
-	if result[0].Confirmed {
-		t.Error("仅有3个元素时不应确认分型")
+	if !result[0].Confirmed {
+		t.Error("分型创建后应立即确认（缠论原文无确认机制）")
 	}
 }
 
@@ -56,31 +56,25 @@ func TestFractal_BottomFractal(t *testing.T) {
 	}
 }
 
-// TestFractal_Confirmation 验证分型在第4个元素出现后被确认。
-func TestFractal_Confirmation(t *testing.T) {
+// TestFractal_ImmediateConfirmation 验证分型在三根元素形成时立即确认（缠论原文无确认等待机制）。
+func TestFractal_ImmediateConfirmation(t *testing.T) {
 	p := NewFractalProcessor()
 
+	// 三根元素形成顶分型 → 立即确认，无需等待第四根
 	elems := []*types.ChanKline{
 		{High: 15, Low: 8, OpenTime: 1},
-		{High: 20, Low: 12, OpenTime: 2}, // 顶分型候选
+		{High: 20, Low: 12, OpenTime: 2},
 		{High: 17, Low: 10, OpenTime: 3},
 	}
-
-	// 3个元素时，分型尚未确认。
 	p.ProcessBatch(elems)
-	fractals := p.Fractals()
-	if len(fractals) != 0 {
-		t.Error("仅有3个元素时分型不应被确认")
-	}
 
-	// 添加第4个元素以确认。
-	p.Process(&types.ChanKline{High: 16, Low: 9, OpenTime: 4})
-	fractals = p.Fractals()
+	// Fractals() 立即返回该分型
+	fractals := p.Fractals()
 	if len(fractals) != 1 {
-		t.Fatalf("期望1个已确认的分型，实际 %d", len(fractals))
+		t.Fatalf("期望1个分型（立即确认），实际 %d", len(fractals))
 	}
 	if !fractals[0].Confirmed {
-		t.Error("第4个元素后分型应被确认")
+		t.Error("分型应创建即确认")
 	}
 }
 
@@ -267,8 +261,8 @@ func TestFractal_DuplicatePointerRecheck(t *testing.T) {
 
 // TestFractal_ContainPipelineEndToEnd 验证含包含处理的完整分型识别流程。
 //
-// K1(20,10) → K2(25,15) → K3(22,12)(不包含,向下) → 顶分型(K2)
-// → K4(18,8)(不包含,向下) → 顶分型确认
+// K1(20,10) → K2(25,15) → K3(22,12)(不包含,向下) → 顶分型(K2) 立即确认
+// → K4(18,8)(不包含,向下)
 func TestFractal_ContainPipelineEndToEnd(t *testing.T) {
 	containP := NewContainProcessor()
 	fractalP := NewFractalProcessor()
@@ -289,6 +283,7 @@ func TestFractal_ContainPipelineEndToEnd(t *testing.T) {
 
 	feed(rk(18, 22, 12, 20, 3)) // K3(22,12), 不包含
 
+	// 3个元素形成顶分型 → 立即确认
 	fractals := fractalP.AllFractals()
 	if len(fractals) != 1 {
 		t.Fatalf("3个元素期望1个分型，实际 %d", len(fractals))
@@ -296,18 +291,19 @@ func TestFractal_ContainPipelineEndToEnd(t *testing.T) {
 	if fractals[0].Type != types.FractalTop {
 		t.Errorf("期望顶分型，实际 %v", fractals[0].Type)
 	}
-	if fractals[0].Confirmed {
-		t.Error("3个元素时顶分型不应确认")
+	if !fractals[0].Confirmed {
+		t.Error("3个元素时顶分型应立即确认（缠论原文无确认机制）")
 	}
 
 	feed(rk(12, 18, 8, 15, 4)) // K4(18,8), 不包含
 
+	// 第四个元素后，分型仍然确认
 	fractals = fractalP.Fractals()
 	if len(fractals) != 1 {
-		t.Fatalf("4个元素期望1个已确认分型，实际 %d", len(fractals))
+		t.Fatalf("期望1个分型，实际 %d", len(fractals))
 	}
 	if !fractals[0].Confirmed {
-		t.Error("第4个元素后顶分型应确认")
+		t.Error("分型应保持确认状态")
 	}
 }
 

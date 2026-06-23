@@ -11,8 +11,7 @@ import (
 // 底分型由连续三根非包含K线组成，其中中间元素的最低点最低，
 // 且中间元素的最高点也最低（缠论原文AND条件）。
 //
-// 分型确认条件：中间元素之后至少存在一个后续非包含元素。
-// （简化实现：仅检查后续元素是否存在，不验证"后续元素不否定该分型"。）
+// 分型一经识别即立即确认（缠论原文无等待后续元素确认的机制）。
 type FractalProcessor struct {
 	elements []*types.ChanKline
 	fractals []types.Fractal
@@ -68,19 +67,8 @@ func (p *FractalProcessor) ProcessBatch(elems []*types.ChanKline) []types.Fracta
 	return p.fractals
 }
 
-// Fractals 返回当前已识别且已确认的分型列表。
+// Fractals 返回所有已识别的分型列表。
 func (p *FractalProcessor) Fractals() []types.Fractal {
-	result := make([]types.Fractal, 0, len(p.fractals))
-	for _, f := range p.fractals {
-		if f.Confirmed {
-			result = append(result, f)
-		}
-	}
-	return result
-}
-
-// AllFractals 返回所有已识别的分型，包括未确认的。
-func (p *FractalProcessor) AllFractals() []types.Fractal {
 	result := make([]types.Fractal, 0, len(p.fractals))
 	result = append(result, p.fractals...)
 	return result
@@ -92,62 +80,50 @@ func (p *FractalProcessor) Reset() {
 	p.fractals = make([]types.Fractal, 0)
 }
 
-// scanLast3 检查最近3个元素中的新分型并更新确认状态。
+// AllFractals 返回所有已识别的分型列表（与 Fractals 相同，缠论原文无需确认机制）。
+func (p *FractalProcessor) AllFractals() []types.Fractal {
+	return p.Fractals()
+}
+
+// scanLast3 检查最近3个元素中的新分型。
+// 分型一经识别即立即确认（缠论原文无等待后续元素确认的机制）。
 func (p *FractalProcessor) scanLast3() {
 	if len(p.elements) < 3 {
 		return
 	}
 
 	n := len(p.elements)
-
-	// 检查最后3个元素是否有新分型。
 	last := p.elements[n-1]
 	mid := p.elements[n-2]
 	first := p.elements[n-3]
 
-	// 检查顶分型：中间元素高点最高 且 低点也最高（缠论原文AND）。
+	// 顶分型：中间元素高点最高 且 低点也最高（缠论原文AND）。
 	if isTopFractal(first, mid, last) {
-		// 确保不重复注册同一分型。
 		if len(p.fractals) == 0 || p.fractals[len(p.fractals)-1].Index != n-2 {
 			mid.FractalType = types.FractalTop
 			p.fractals = append(p.fractals, types.Fractal{
-				Type:     types.FractalTop,
-				Index:    n - 2,
-				High:     mid.High,
-				Low:      mid.Low,
-				OpenTime: mid.OpenTime,
+				Type:      types.FractalTop,
+				Index:     n - 2,
+				High:      mid.High,
+				Low:       mid.Low,
+				OpenTime:  mid.OpenTime,
+				Confirmed: true,
 			})
 		}
 	}
 
-	// 检查底分型：中间元素低点最低 且 高点也最低（缠论原文AND）。
+	// 底分型：中间元素低点最低 且 高点也最低（缠论原文AND）。
 	if isBottomFractal(first, mid, last) {
 		if len(p.fractals) == 0 || p.fractals[len(p.fractals)-1].Index != n-2 {
 			mid.FractalType = types.FractalBottom
 			p.fractals = append(p.fractals, types.Fractal{
-				Type:     types.FractalBottom,
-				Index:    n - 2,
-				High:     mid.High,
-				Low:      mid.Low,
-				OpenTime: mid.OpenTime,
+				Type:      types.FractalBottom,
+				Index:     n - 2,
+				High:      mid.High,
+				Low:       mid.Low,
+				OpenTime:  mid.OpenTime,
+				Confirmed: true,
 			})
-		}
-	}
-
-	// 更新确认状态。
-	// 分型在至少一个后续元素出现后被确认。
-	p.updateConfirmations(n)
-}
-
-// updateConfirmations 当后续元素存在时将分型标记为已确认。
-func (p *FractalProcessor) updateConfirmations(n int) {
-	for i := range p.fractals {
-		if p.fractals[i].Confirmed {
-			continue
-		}
-		// 非包含序列中索引为`index`的分型，当其之后存在元素时被确认。
-		if p.fractals[i].Index+2 < n {
-			p.fractals[i].Confirmed = true
 		}
 	}
 }
