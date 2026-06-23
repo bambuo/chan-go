@@ -629,16 +629,17 @@ func TestSignalQuality_ResonanceGain(t *testing.T) {
 	}
 
 	// 验证有区间套共振的信号 confidence 明显高于原始基准值
-	// calcDivergenceConfidence 计算：
-	//   base=0.5, Ratio=0.5(<0.7 → +0.2)=0.7, 中枢数=2(<3 → 不加)
-	//   原始 confidence = 0.7
-	// 区间套 boost: nestingDepth=1.1 → final = 0.7 × 1.1 = 0.77
+	// PRD §8.4 公式：confidence = base(0.60) × divergenceStrength(1.0)
+	//   × directionAlignment × nestingDepth × (1-recastRisk)
+	//   base=0.60 (BUY_1), ratio=0.5 → divergenceStrength=1.0
+	//   原始 confidence = 0.60
+	// 区间套 boost: nestingDepth=1.1 → final = 0.60 × 1.1 = 0.66
 	if withResonance.Resonance.Kind != types.ResonanceIntervalNesting {
 		t.Errorf("期望区间套共振, 实际 %s", withResonance.Resonance.Kind)
 	}
 
-	// 有共振的 confidence 应 > 无共振的原始值（0.7）
-	baseConfidence := 0.7
+	// 有共振的 confidence 应 > 无共振的原始值（0.60）
+	baseConfidence := 0.60
 	if withResonance.Confidence <= baseConfidence {
 		t.Errorf("有区间套共振的信号 confidence 应 > 原始 %.2f, 实际 %.4f",
 			baseConfidence, withResonance.Confidence)

@@ -18,10 +18,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"trade/internal/config"
 	"trade/internal/eventbus"
+	"trade/internal/levels"
 	"trade/internal/log"
 	"trade/internal/signal"
 	"trade/internal/structure"
@@ -39,6 +41,7 @@ type Gateway struct {
 
 	signalEngine  *signal.SignalEngine
 	structureTree *structure.Tree
+	levelBuilder  *levels.LevelBuilder
 
 	rdb    *redis.Client
 	rdbCtx context.Context
@@ -53,13 +56,14 @@ type Gateway struct {
 //
 // 订阅总线事件并将信号/共振写入 Redis Stream（XADD）。
 // 同时提供 REST 接口供外部查询当前状态快照。
-func New(cfg config.Config, bus *eventbus.GenericBus, signalEngine *signal.SignalEngine, structureTree *structure.Tree) *Gateway {
+func New(cfg config.Config, bus *eventbus.GenericBus, signalEngine *signal.SignalEngine, structureTree *structure.Tree, levelBuilder *levels.LevelBuilder) *Gateway {
 	g := &Gateway{
 		cfg:           cfg,
 		bus:           bus,
 		logger:        log.Component("m8.gateway"),
 		signalEngine:  signalEngine,
 		structureTree: structureTree,
+		levelBuilder:  levelBuilder,
 		rdbCtx:        context.Background(),
 	}
 
@@ -189,9 +193,11 @@ func (g *Gateway) setupRouter() {
 	r.Use(g.requestLogger())
 
 	r.GET("/v1/health", g.handleHealth)
+	r.GET("/v1/signals/:symbol", g.handleSignals) // 历史信号查询（带过滤）
 	r.GET("/v1/signals/:symbol/current", g.handleCurrentSignals)
 	r.GET("/v1/signals/:symbol/:signalId", g.handleSignalDetail)
 	r.GET("/v1/structure/:symbol", g.handleStructureCurrent)
+	r.GET("/v1/structure/:symbol/history", g.handleStructureHistory) // 指定时刻结构
 	r.GET("/v1/levels/:symbol", g.handleLevels)
 
 	g.router = r
@@ -225,6 +231,90 @@ func (g *Gateway) handleCurrentSignals(c *gin.Context) {
 		"symbol":  symbol,
 		"signals": signals,
 	})
+}
+
+// handleSignals 历史信号查询（PRD §11.1）。
+// GET /v1/signals/{symbol}?level=L1&state=confirmed&limit=20
+func (g *Gateway) handleSignals(c *gin.Context) {
+	symbol := c.Param("symbol")
+
+	// 解析可选过滤参数
+	var levelFilter types.Level
+	if lvl := c.Query("level"); lvl != "" {
+		switch lvl {
+		case "L1":
+			levelFilter = types.LevelL1
+		case "L2":
+			levelFilter = types.LevelL2
+		case "L3":
+			levelFilter = types.LevelL3
+		case "L4":
+			levelFilter = types.LevelL4
+		}
+	}
+
+	stateFilter := types.SignalState(c.Query("state"))
+
+	limit := 0
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	signals := g.signalEngine.QuerySignals(symbol, levelFilter, stateFilter, limit)
+	c.JSON(http.StatusOK, gin.H{
+		"symbol":  symbol,
+		"signals": signals,
+		"filter": map[string]interface{}{
+			"level": levelFilter,
+			"state": stateFilter,
+			"limit": limit,
+		},
+	})
+}
+
+// handleStructureHistory 指定时刻的结构快照（PRD §11.1）。
+// GET /v1/structure/{symbol}/history?ts=...
+func (g *Gateway) handleStructureHistory(c *gin.Context) {
+	symbol := c.Param("symbol")
+	tsStr := c.Query("ts")
+	if tsStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing ts query parameter"})
+		return
+	}
+
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ts"})
+		return
+	}
+
+	// 查询 M3 版本历史 + 当前状态
+	result := make(map[string]interface{})
+	for _, level := range []types.Level{types.LevelL1, types.LevelL2, types.LevelL3, types.LevelL4} {
+		state := g.structureTree.GetCurrentState(symbol, level)
+		if state == nil {
+			continue
+		}
+		versions := g.structureTree.GetVersionHistory(symbol, level)
+		levelInfo := map[string]interface{}{
+			"current": map[string]interface{}{
+				"strokes":       len(state.Confirmed.Strokes),
+				"pivotZones":    len(state.Confirmed.PivotZones),
+				"trendPatterns": len(state.Confirmed.TrendPatterns),
+			},
+			"versionHistory": versions,
+			"requestedTs":    ts,
+		}
+		result[level.String()] = levelInfo
+	}
+
+	if len(result) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no structure data for symbol"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"symbol": symbol, "levels": result})
 }
 
 func (g *Gateway) handleSignalDetail(c *gin.Context) {
@@ -264,12 +354,21 @@ func (g *Gateway) handleLevels(c *gin.Context) {
 		if state == nil {
 			continue
 		}
-		result[level.String()] = map[string]interface{}{
+		levelInfo := map[string]interface{}{
 			"strokes":       len(state.Confirmed.Strokes),
 			"pivotZones":    len(state.Confirmed.PivotZones),
 			"trendPatterns": len(state.Confirmed.TrendPatterns),
 			"inSync":        state.InSync,
 		}
+
+		// 附加 LevelTimeHint（PRD §6.3）
+		if g.levelBuilder != nil {
+			if hint := g.levelBuilder.GetTimeHint(symbol, level); hint != nil {
+				levelInfo["timeHint"] = hint
+			}
+		}
+
+		result[level.String()] = levelInfo
 	}
 
 	if len(result) == 0 {

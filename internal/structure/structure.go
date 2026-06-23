@@ -205,3 +205,35 @@ func (t *Tree) GetLatestStructure(symbol string, level types.Level) *types.Level
 	}
 	return nil
 }
+
+// GetVersionHistory 返回指定 symbol + level 的版本历史列表（PRD §10.2/§11.1）。
+func (t *Tree) GetVersionHistory(symbol string, level types.Level) []types.StructureVersion {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if sym, ok := t.versions[symbol]; ok {
+		if vers, ok := sym[level]; ok {
+			result := make([]types.StructureVersion, len(vers))
+			copy(result, vers)
+			return result
+		}
+	}
+	return nil
+}
+
+// GetVersion 返回指定 versionId 的版本元数据。
+func (t *Tree) GetVersion(versionID string) *types.StructureVersion {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	for _, symVersions := range t.versions {
+		for _, vers := range symVersions {
+			for _, v := range vers {
+				if v.VersionID == versionID {
+					return &v
+				}
+			}
+		}
+	}
+	return nil
+}

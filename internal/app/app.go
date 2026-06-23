@@ -52,6 +52,9 @@ type App struct {
 	// 生命周期控制
 	cancel    context.CancelFunc
 	startTime time.Time
+
+	// 快照防抖（事件触发快照的最小间隔）
+	lastSnapshotTS int64
 }
 
 // New 根据配置构建 App，依次初始化所有子系统。
@@ -107,6 +110,9 @@ func New(cfg config.Config) (*App, error) {
 	// === M5 信号引擎 ===
 	sigEngine := signals.New(gBus)
 
+	// === 连接 M3Bridge → SignalEngine（PRD §4 架构图 M2→M3→M5 信号流）===
+	m3Bridge.WithSignalSink(sigEngine)
+
 	// === M6 共振引擎 ===
 	resEngine := resonance.New(gBus, tree)
 
@@ -121,9 +127,10 @@ func New(cfg config.Config) (*App, error) {
 	}, gBus)
 
 	// === M8 输出网关 ===
-	gatewayS := gateway.New(cfg, gBus, sigEngine, tree)
+	gatewayS := gateway.New(cfg, gBus, sigEngine, tree, lvlBldr)
 
 	// === 订阅 M1 事件 → M2 Pipeline → M3 结构树 ===
+	// 订阅 M1 K 线事件 → M2 Pipeline → M3 结构树
 	gBus.Subscribe(types.EventKlineReceived, func(evt types.Event) {
 		payload, ok := evt.Payload.(types.KlineReceivedPayload)
 		if !ok || payload.Kline == nil {
@@ -145,14 +152,13 @@ func New(cfg config.Config) (*App, error) {
 		}
 	})
 
-	return &App{
-		cfg:      cfg,
-		logger:   logger,
-		bus:      bus,
-		gBus:     gBus,
-		appState: appState,
-		snapMgr:  snapMgr,
-		// metrics: 包级单例 observability.M
+	snapshotApp := &App{
+		cfg:       cfg,
+		logger:    logger,
+		bus:       bus,
+		gBus:      gBus,
+		appState:  appState,
+		snapMgr:   snapMgr,
 		pipeline:  pipeline,
 		m3Bridge:  m3Bridge,
 		ingestG:   ingestG,
@@ -162,7 +168,25 @@ func New(cfg config.Config) (*App, error) {
 		resEngine: resEngine,
 		gatewayS:  gatewayS,
 		startTime: time.Now(),
-	}, nil
+	}
+
+	// 订阅结构变更事件 → 触发快照（PRD §12.3 事件触发）
+	gBus.Subscribe(types.EventStructureVersionChanged, func(evt types.Event) {
+		if time.Now().UnixMilli()-snapshotApp.lastSnapshotTS < 30000 {
+			return
+		}
+		snapshotApp.takeSnapshot()
+	})
+
+	// 订阅级别漂移事件 → 触发快照
+	gBus.Subscribe(types.EventLevelRecast, func(evt types.Event) {
+		if time.Now().UnixMilli()-snapshotApp.lastSnapshotTS < 30000 {
+			return
+		}
+		snapshotApp.takeSnapshot()
+	})
+
+	return snapshotApp, nil
 }
 
 // Run 启动系统主循环。
@@ -268,6 +292,7 @@ func (a *App) snapshotLoop(ctx context.Context) {
 
 // takeSnapshot 执行所有 symbol 的快照。
 func (a *App) takeSnapshot() {
+	a.lastSnapshotTS = time.Now().UnixMilli()
 	for _, symbol := range a.cfg.Symbols {
 		offset, _ := a.appState.GetRedisOffset(symbol)
 		dualTrack := a.appState.GetDualTrack(symbol)

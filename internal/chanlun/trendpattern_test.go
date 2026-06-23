@@ -10,13 +10,23 @@ import (
 // ====== 走势类型分类测试 ======
 
 // TestTrendPattern_Consolidation 验证：单个中枢 → 盘整。
+//
+// 反向后出现反向中枢时，原走势被标记为 completed（reverseBreak）。
 func TestTrendPattern_Consolidation(t *testing.T) {
 	tp := NewTrendPatternProcessor()
 
+	// 第一组：向上盘整（中枢1）
+	// 第二组：向下中枢（反向破坏 → 中枢1 标记 completed）
 	strokes := []*stroke{
 		mkStroke(0, 10, 5, 20, 15, types.DirectionUp),
 		mkStroke(1, 20, 15, 15, 8, types.DirectionDown),
 		mkStroke(2, 15, 8, 25, 18, types.DirectionUp),
+		mkStroke(3, 25, 18, 30, 22, types.DirectionUp),
+		mkStroke(4, 30, 22, 20, 15, types.DirectionDown),
+		mkStroke(5, 20, 15, 15, 10, types.DirectionDown),
+		mkStroke(6, 15, 10, 25, 18, types.DirectionUp),
+		mkStroke(7, 25, 18, 15, 8, types.DirectionDown),
+		mkStroke(8, 15, 8, 10, 5, types.DirectionDown),
 	}
 	pivotZones := []*pivotZone{
 		{
@@ -29,18 +39,41 @@ func TestTrendPattern_Consolidation(t *testing.T) {
 			SegmentsCount:  3,
 			Completed:      true,
 		},
+		{
+			index:          1,
+			StartStrokeIdx: 6,
+			EndStrokeIdx:   8,
+			ZG:             18,
+			ZD:             8,
+			Direction:      types.DirectionDown,
+			SegmentsCount:  3,
+			Completed:      true,
+		},
 	}
 
 	patterns := tp.Process("TEST", strokes, pivotZones)
 
-	if len(patterns) != 1 {
-		t.Fatalf("期望 1 个走势类型, 实际 %d", len(patterns))
+	// 应有 2 个走势类型：向上盘整 + 向下盘整
+	if len(patterns) != 2 {
+		t.Fatalf("期望 2 个走势类型, 实际 %d", len(patterns))
 	}
-	if patterns[0].Type != "consolidation" {
-		t.Errorf("类型期望 consolidation, 实际 %s", patterns[0].Type)
+
+	// 第一个走势（向上盘整）应已完成（被反向破坏）
+	p0 := patterns[0]
+	if p0.Type != "consolidation" {
+		t.Errorf("走势1 类型期望 consolidation, 实际 %s", p0.Type)
 	}
-	if !patterns[0].Completed {
-		t.Error("走势类型应标记为已完成")
+	if !p0.Completed {
+		t.Error("走势1 应标记为已完成（反向破坏）")
+	}
+	if p0.EndReason != "reverseBreak" {
+		t.Errorf("走势1 EndReason 期望 reverseBreak, 实际 %s", p0.EndReason)
+	}
+
+	// 第二个走势（向下盘整）是当前走势，不应标记为已完成
+	p1 := patterns[1]
+	if p1.Completed {
+		t.Error("走势2（当前走势）不应标记为已完成")
 	}
 }
 

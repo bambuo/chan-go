@@ -115,6 +115,29 @@ func (bcp *DivergenceProcessor) Process(symbol string, strokes []*stroke) []*div
 	return st.divergences
 }
 
+// ReprocessFrom 从指定笔索引开始重算背驰（PRD §10.4.3 回溯修正）。
+func (bcp *DivergenceProcessor) ReprocessFrom(symbol string, fromIdx int) {
+	st := bcp.getState(symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	// 删除从 fromIdx 之后的背驰
+	var kept []*divergence
+	for _, d := range st.divergences {
+		if d.Stroke2Idx < fromIdx {
+			kept = append(kept, d)
+		}
+	}
+	st.divergences = kept
+
+	// 重置已处理笔索引，允许重算
+	resetIdx := fromIdx - 2
+	if resetIdx < 0 {
+		resetIdx = 0
+	}
+	st.processedStroke = resetIdx
+}
+
 // Load 返回所有背驰信号。
 func (bcp *DivergenceProcessor) Load(symbol string) []*divergence {
 	st := bcp.getState(symbol)

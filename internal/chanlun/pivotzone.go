@@ -83,6 +83,29 @@ func (zp *PivotZoneProcessor) Process(symbol string, strokes []*stroke) []*pivot
 	return st.pivotZones
 }
 
+// ReprocessFrom 从指定笔索引开始重算中枢（PRD §10.4.3 回溯修正）。
+func (zp *PivotZoneProcessor) ReprocessFrom(symbol string, fromIdx int) {
+	st := zp.getState(symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	// 删除从 fromIdx 之后的中枢
+	var kept []*pivotZone
+	for _, zs := range st.pivotZones {
+		if zs.EndStrokeIdx < fromIdx {
+			kept = append(kept, zs)
+		}
+	}
+	st.pivotZones = kept
+
+	// 重置已处理笔索引，允许重算
+	resetIdx := fromIdx - 3
+	if resetIdx < 0 {
+		resetIdx = 0
+	}
+	st.processedIdx = resetIdx
+}
+
 // Load 返回所有已识别的中枢。
 func (zp *PivotZoneProcessor) Load(symbol string) []*pivotZone {
 	st := zp.getState(symbol)

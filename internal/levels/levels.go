@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,10 +23,17 @@ import (
 
 // 级别范围常量。
 const (
-	baseLevel         = types.LevelL1    // 基础级别（由 M2 Pipeline 直接产出）
-	maxLevel          = types.LevelL4    // 最高递归级别
-	driftThresholdPct = 0.3              // 双轨分歧阈值（30%）
+	baseLevel         = types.LevelL1 // 基础级别（由 M2 Pipeline 直接产出）
+	maxLevel          = types.LevelL4 // 最高递归级别
+	driftThresholdPct = 0.3           // 双轨分歧阈值（30%）
 )
+
+// durationSample 单次级别持续时间的采样。
+type durationSample struct {
+	startTS int64   // 开始时间戳
+	endTS   int64   // 结束时间戳
+	durSec  float64 // 持续时间（秒）
+}
 
 // LevelBuilder 递归级别构建器（M4）。
 //
@@ -53,6 +61,12 @@ type LevelBuilder struct {
 
 	// 事件订阅 ID（用于 Stop 时取消订阅）
 	subID int64
+
+	// LevelTimeHint 统计（PRD §6.3）
+	// symbol → level → 持续时间采样列表
+	timeSamples map[string]map[types.Level][]durationSample
+	// symbol → level → 最后计算的 timeHint 缓存
+	timeHintCache map[string]map[types.Level]*types.LevelTimeHint
 }
 
 // New 创建级别构建器，订阅 M3 版本变更事件。
@@ -68,6 +82,8 @@ func New(bus *eventbus.GenericBus, tree *structure.Tree) *LevelBuilder {
 		logger:                 log.Component("m4.levels"),
 		processedTrendPatterns: make(map[string]map[types.Level]int),
 		states:                 make(map[string]map[types.Level]*types.DualTrackState),
+		timeSamples:            make(map[string]map[types.Level][]durationSample),
+		timeHintCache:          make(map[string]map[types.Level]*types.LevelTimeHint),
 	}
 
 	// 订阅 M3 结构版本变更事件
@@ -163,6 +179,9 @@ func (b *LevelBuilder) processLevelRecursive(symbol string, fromLevel types.Leve
 		"targetLevel", targetLevel,
 		"count", len(completedPatterns),
 	)
+
+	// 2b. 记录级别时间跨度采样（PRD §6.3 LevelTimeHint）
+	b.recordTimeSamples(symbol, fromLevel, completedPatterns)
 
 	// 3. 构建 targetLevel 的笔
 	newStrokes := b.buildHigherLevelStrokes(symbol, targetLevel, completedPatterns)
@@ -325,6 +344,135 @@ func (b *LevelBuilder) buildHigherLevelStrokes(symbol string, targetLevel types.
 }
 
 // ========================================================================
+// LevelTimeHint 统计（PRD §6.3）
+// ========================================================================
+
+// recordTimeSamples 记录级别持续时间的采样点。
+//
+// 每个完成的走势类型提供一个采样：从 ValidFromTS 到当前的持续时间为样本。
+// 走势类型完成时（Completed=true）触发。
+func (b *LevelBuilder) recordTimeSamples(symbol string, level types.Level, patterns []types.TrendPattern) {
+	now := time.Now().UnixMilli()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// 初始化 map
+	if _, ok := b.timeSamples[symbol]; !ok {
+		b.timeSamples[symbol] = make(map[types.Level][]durationSample)
+	}
+
+	for _, tp := range patterns {
+		if !tp.Completed {
+			continue
+		}
+		durSec := float64(now-tp.ValidFromTS) / 1000.0
+		if durSec <= 0 {
+			continue
+		}
+
+		b.timeSamples[symbol][level] = append(b.timeSamples[symbol][level], durationSample{
+			startTS: tp.ValidFromTS,
+			endTS:   now,
+			durSec:  durSec,
+		})
+	}
+
+	// 每次记录后重新计算缓存
+	b.rebuildTimeHintCache(symbol, level)
+}
+
+// rebuildTimeHintCache 重建指定 symbol+level 的 timeHint 缓存。
+func (b *LevelBuilder) rebuildTimeHintCache(symbol string, level types.Level) {
+	samples := b.timeSamples[symbol][level]
+	if len(samples) == 0 {
+		return
+	}
+
+	// 收集所有 durSec 并排序
+	durs := make([]float64, len(samples))
+	for i, s := range samples {
+		durs[i] = s.durSec
+	}
+
+	// 计算平均值
+	sum := 0.0
+	for _, d := range durs {
+		sum += d
+	}
+	avg := sum / float64(len(durs))
+
+	// 计算 P10/P90（简单实现：排序后取百分位）
+	sort.Float64s(durs)
+	p10 := percentile(durs, 10)
+	p90 := percentile(durs, 90)
+
+	// 缓存结果
+	if _, ok := b.timeHintCache[symbol]; !ok {
+		b.timeHintCache[symbol] = make(map[types.Level]*types.LevelTimeHint)
+	}
+	b.timeHintCache[symbol][level] = &types.LevelTimeHint{
+		AvgDurationSec: math.Round(avg*100) / 100,
+		P10DurationSec: math.Round(p10*100) / 100,
+		P90DurationSec: math.Round(p90*100) / 100,
+		SampleCount:    len(samples),
+	}
+}
+
+// GetTimeHint 返回指定 symbol+level 的 timeHint 统计。
+func (b *LevelBuilder) GetTimeHint(symbol string, level types.Level) *types.LevelTimeHint {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if _, ok := b.timeHintCache[symbol]; !ok {
+		return nil
+	}
+	return b.timeHintCache[symbol][level]
+}
+
+// GetAllTimeHints 返回指定 symbol 的所有级别 timeHint。
+func (b *LevelBuilder) GetAllTimeHints(symbol string) map[string]*types.LevelTimeHint {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	result := make(map[string]*types.LevelTimeHint)
+	if _, ok := b.timeHintCache[symbol]; !ok {
+		return result
+	}
+	for level, hint := range b.timeHintCache[symbol] {
+		result[level.String()] = hint
+	}
+	return result
+}
+
+// percentile 计算排序后的浮点数切片在 p 百分位的值。
+func percentile(sorted []float64, p int) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p < 0 {
+		p = 0
+	}
+	if p > 100 {
+		p = 100
+	}
+	if p == 0 {
+		return sorted[0]
+	}
+	if p == 100 {
+		return sorted[len(sorted)-1]
+	}
+	index := float64(p) / 100.0 * float64(len(sorted)-1)
+	lower := int(index)
+	upper := lower + 1
+	if upper >= len(sorted) {
+		return sorted[lower]
+	}
+	frac := index - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[upper]*frac
+}
+
+// ========================================================================
 // 高级别中枢检测
 // ========================================================================
 
@@ -484,10 +632,10 @@ func makeTrendPattern(group []types.PivotZone) types.TrendPattern {
 	// 起止价格：基于趋势方向
 	var startPrice, endPrice float64
 	if dir == types.DirectionUp {
-		startPrice = group[0].ZD  // 向上趋势从下沿开始
+		startPrice = group[0].ZD          // 向上趋势从下沿开始
 		endPrice = group[len(group)-1].ZG // 到上沿结束
 	} else {
-		startPrice = group[0].ZG  // 向下趋势从上沿开始
+		startPrice = group[0].ZG          // 向下趋势从上沿开始
 		endPrice = group[len(group)-1].ZD // 到下沿结束
 	}
 

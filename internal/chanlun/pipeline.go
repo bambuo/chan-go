@@ -175,8 +175,34 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 		newStrokes = allStrokes[oldStrokeN:]
 	}
 
+	// 回溯修正检测（PRD §10.4.3）：检查笔层是否有被修改或删除的笔
+	// 如果有，触发下游处理器从修改点重算
+	strokeChanged, hadRemoval := s.stroke.CheckModifications(raw.Symbol)
+	backtrackFrom := -1
+	if hadRemoval {
+		backtrackFrom = 0 // 有删除时，从头重算最安全
+	} else if strokeChanged >= 0 {
+		backtrackFrom = strokeChanged
+	}
+
+	if backtrackFrom >= 0 {
+		// 重置下游处理器到指定笔索引
+		s.segment.ReprocessFrom(s.symbol, backtrackFrom)
+		s.pivotZone.ReprocessFrom(s.symbol, backtrackFrom)
+		s.trendPattern.ReprocessFrom(s.symbol, backtrackFrom)
+		s.divergence.ReprocessFrom(s.symbol, backtrackFrom)
+
+		// 修正提交水位，确保后续增量逻辑正确处理
+		if backtrackFrom < oldStrokeN {
+			s.lastCommittedSegN = 0
+			s.lastCommittedPivotZoneN = 0
+			s.lastCommittedTrendPatternN = 0
+			s.lastCommittedDivergenceN = 0
+		}
+	}
+
 	// 增量线段识别：用新确认的笔触发线段状态机
-	if len(newStrokes) > 0 {
+	if len(newStrokes) > 0 || backtrackFrom >= 0 {
 		s.segment.Process(s.symbol, allStrokes)
 	}
 
@@ -225,6 +251,30 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 	newDivergences := []*divergence{}
 	if len(allDivergences) > oldDivergenceN {
 		newDivergences = allDivergences[oldDivergenceN:]
+	}
+
+	// 走势结束判定（PRD §6.1 R1）：背驰出现 → 标记当前走势为已完成
+	if len(newDivergences) > 0 && len(allTrendPatterns) > 0 {
+		lastTP := allTrendPatterns[len(allTrendPatterns)-1]
+		if !lastTP.Completed {
+			// 检查新背驰是否与最后一个走势类型方向匹配
+			for _, d := range newDivergences {
+				if d.Confirmed {
+					match := false
+					if d.Type == "bottomDivergence" && lastTP.Direction == types.DirectionDown {
+						match = true
+					} else if d.Type == "topDivergence" && lastTP.Direction == types.DirectionUp {
+						match = true
+					}
+					if match {
+						s.trendPattern.MarkLastCompleted(s.symbol, "divergence")
+						// 重新获取走势类型列表（MarkLastCompleted 修改了内部状态）
+						allTrendPatterns = s.trendPattern.Load(s.symbol)
+						break
+					}
+				}
+			}
+		}
 	}
 
 	// 更新提交水位

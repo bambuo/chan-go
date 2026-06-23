@@ -180,6 +180,38 @@ func (sp *SegmentProcessor) Process(symbol string, strokes []*stroke) []*segment
 	return st.currentSegments()
 }
 
+// ReprocessFrom 从指定笔索引开始重算线段（PRD §10.4.3 回溯修正）。
+// 删除 fromIdx 之后的所有线段，重置 totalStrokes 到 fromIdx。
+func (sp *SegmentProcessor) ReprocessFrom(symbol string, fromIdx int) {
+	st := sp.getState(symbol)
+	if fromIdx >= st.totalStrokes {
+		return // 无需重算
+	}
+
+	// 删除从 fromIdx 开始的线段
+	var kept []*segment
+	for _, seg := range st.segments {
+		if len(seg.strokes) == 0 {
+			continue
+		}
+		lastStroke := seg.strokes[len(seg.strokes)-1]
+		if lastStroke.Index < fromIdx {
+			kept = append(kept, seg)
+		}
+	}
+	st.segments = kept
+	st.current = nil
+	st.pending = nil
+
+	// 修正已处理笔计数
+	// 需要删除的笔至少跨越一个线段，保守起见重置到 fromIdx - 2
+	resetIdx := fromIdx - 2
+	if resetIdx < 0 {
+		resetIdx = 0
+	}
+	st.totalStrokes = resetIdx
+}
+
 // CurrentSegments 返回当前所有线段。
 func (sp *SegmentProcessor) CurrentSegments(symbol string) []*segment {
 	st := sp.getState(symbol)

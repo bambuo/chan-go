@@ -33,6 +33,11 @@ type strokeState struct {
 	cfg                types.StrokeConfig
 	pendingFractals    []*types.ChanKline // OpenTime 分型记录器，等待确认
 	processedFractalTS map[int64]bool     // 已处理的 OpenTime 集合
+
+	// 回溯修正跟踪
+	modifiedStrokeIdx int  // 本轮被修改的最早笔索引，-1 表示无修改
+	strokeRemoved     bool // 是否有笔被删除
+	strokeRemovedIdx  int  // 被删除的笔索引
 }
 
 // StrokeProcessor 笔识别处理器。
@@ -101,6 +106,38 @@ func (bp *StrokeProcessor) Process(symbol string, elem *types.ChanKline, allFrac
 	return st.strokes
 }
 
+// trackModification 记录笔修改的位置（用于回溯修正检测）。
+func (s *strokeState) trackModification(strokeIdx int) {
+	if s.modifiedStrokeIdx < 0 || strokeIdx < s.modifiedStrokeIdx {
+		s.modifiedStrokeIdx = strokeIdx
+	}
+}
+
+// CheckModifications 检查本轮是否有笔被修改或删除。
+// 返回最早变更的笔索引，-1 表示无变更。
+// 调用后重置状态，供下一轮使用。
+func (s *strokeState) CheckModifications() (firstModifiedIdx int, hadRemoval bool) {
+	idx := s.modifiedStrokeIdx
+	removed := s.strokeRemoved
+	removedIdx := s.strokeRemovedIdx
+
+	// 重置
+	s.modifiedStrokeIdx = -1
+	s.strokeRemoved = false
+	s.strokeRemovedIdx = -1
+
+	if removed && (idx < 0 || removedIdx < idx) {
+		idx = removedIdx
+	}
+	return idx, removed
+}
+
+// CheckModifications 检查指定 symbol 的笔修改状态（PRD §10.4.3 回溯修正）。
+func (bp *StrokeProcessor) CheckModifications(symbol string) (int, bool) {
+	st := bp.getOrCreateState(symbol)
+	return st.CheckModifications()
+}
+
 // Strokes returns all confirmed strokes (笔).
 func (bp *StrokeProcessor) Strokes(symbol string) []*stroke {
 	st := bp.getOrCreateState(symbol)
@@ -124,6 +161,8 @@ func (bp *StrokeProcessor) getOrCreateState(symbol string) *strokeState {
 		pendingFractals:    make([]*types.ChanKline, 0),
 		processedFractalTS: make(map[int64]bool),
 		cfg:                types.DefaultStrokeConfig(),
+		modifiedStrokeIdx:  -1,
+		strokeRemovedIdx:   -1,
 	}
 	bp.states[symbol] = s
 	return s
@@ -390,6 +429,7 @@ func (s *strokeState) tryUpdateEndpoint(newFractal *types.ChanKline, lastStroke 
 			lastStroke.EndPrice = newFractal.High
 			lastStroke.High = math.Max(lastStroke.High, newFractal.High)
 			s.lastEndpoint = newFractal
+			s.trackModification(lastStroke.Index)
 			return true
 		}
 	} else {
@@ -399,6 +439,7 @@ func (s *strokeState) tryUpdateEndpoint(newFractal *types.ChanKline, lastStroke 
 			lastStroke.EndPrice = newFractal.Low
 			lastStroke.Low = math.Min(lastStroke.Low, newFractal.Low)
 			s.lastEndpoint = newFractal
+			s.trackModification(lastStroke.Index)
 			return true
 		}
 	}
@@ -446,7 +487,10 @@ func (s *strokeState) trySubPeakCorrection(elem *types.ChanKline) {
 
 	// 执行修正：移除最后一笔，尝试更新新的最后一笔的终点
 	removed := s.strokes[len(s.strokes)-1]
+	removedIdx := removed.Index
 	s.strokes = s.strokes[:len(s.strokes)-1]
+	s.strokeRemoved = true
+	s.strokeRemovedIdx = removedIdx
 
 	if len(s.strokes) > 0 {
 		newLast := s.strokes[len(s.strokes)-1]
@@ -457,6 +501,8 @@ func (s *strokeState) trySubPeakCorrection(elem *types.ChanKline) {
 
 	// 修正失败，恢复被移除的笔
 	s.strokes = append(s.strokes, removed)
+	s.strokeRemoved = false
+	s.strokeRemovedIdx = -1
 }
 
 // clearVirtualStroke 清理或恢复虚笔（笔.md §10.1）。

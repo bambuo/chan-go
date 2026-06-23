@@ -25,6 +25,7 @@ type trendPattern struct {
 	High           float64             // 区间最高
 	Low            float64             // 区间最低
 	Completed      bool                // 是否已结束
+	EndReason      string              // "divergence"(背驰) / "reverseBreak"(反向破坏)
 }
 
 // trendPatternState 走势类型状态。
@@ -68,6 +69,55 @@ func (zp *TrendPatternProcessor) Process(symbol string, strokes []*stroke, pivot
 	return st.patterns
 }
 
+// MarkLastCompleted 标记最后一个走势类型为已完成（由背驰或外部信号触发）。
+//
+// PRD §6.1 R1: 走势结束判定 = 背驰或反向破坏，先发生者。
+// 当背驰在当前走势的最后一段上被检测到时，调用此方法。
+// EndReason: "divergence" 或 "reverseBreak"。
+func (zp *TrendPatternProcessor) MarkLastCompleted(symbol string, endReason string) {
+	st := zp.getState(symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if len(st.patterns) == 0 {
+		return
+	}
+	last := st.patterns[len(st.patterns)-1]
+	if last.Completed {
+		return // 已完成，不重复标记
+	}
+	last.Completed = true
+	last.EndReason = endReason
+}
+
+// ReprocessFrom 从指定笔索引开始重算走势类型（PRD §10.4.3 回溯修正）。
+// 走势类型完全从中枢重建，所以只需重置 processedIdx。
+func (zp *TrendPatternProcessor) ReprocessFrom(symbol string, fromIdx int) {
+	st := zp.getState(symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	// 删除从 fromIdx 之后的走势类型
+	var kept []*trendPattern
+	for _, tp := range st.patterns {
+		if tp.EndStrokeIdx < fromIdx {
+			kept = append(kept, tp)
+		}
+	}
+	st.patterns = kept
+
+	// 重置已处理中枢索引
+	resetIdx := 0
+	for _, tp := range kept {
+		for _, pzID := range tp.PivotZoneIDs {
+			if pzID+1 > resetIdx {
+				resetIdx = pzID + 1
+			}
+		}
+	}
+	st.processedIdx = resetIdx
+}
+
 // Load 返回所有走势类型。
 func (zp *TrendPatternProcessor) Load(symbol string) []*trendPattern {
 	st := zp.getState(symbol)
@@ -95,35 +145,67 @@ func (zp *TrendPatternProcessor) getState(symbol string) *trendPatternState {
 	return s
 }
 
-// classify 基于当前中枢列表执行走势类型分类。
-// 按顺序分组：一组互不重叠的同向中枢构成一个走势类型。
-// 每当中枢方向变化或重叠时，结束当前走势、开始新的走势。
+// classify 基于当前中枢列表执行走势类型分类（PRD §6.1 + 走势类型分类算法.md）。
+//
+// 走势结束判定（PRD R1）：背驰出现 或 被反向走势破坏，二者先发生者。
+// 反向破坏 = 次级别出现一个完整的反向走势类型（≥1 反向中枢 + 有效突破）。
+//
+// 分组规则：
+//   - 一组互不重叠的同向中枢构成一个走势类型。
+//   - 每当中枢方向变化或重叠时，结束当前走势、开始新的走势。
+//   - 当前分组（最后一组）暂不标记 completed，等待后续确认或反向破坏。
 func (st *trendPatternState) classify() {
-	st.patterns = nil
 	if len(st.pivotZones) == 0 {
+		st.patterns = nil
 		return
 	}
 
-	currentGroup := []*pivotZone{st.pivotZones[0]}
+	// 全量重算：从已有中枢重建分组
+	type group struct {
+		zones []*pivotZone
+		dir   types.ChanDirection
+	}
+	var groups []group
+
+	current := group{zones: []*pivotZone{st.pivotZones[0]}, dir: st.pivotZones[0].Direction}
 
 	for i := 1; i < len(st.pivotZones); i++ {
 		prev := st.pivotZones[i-1]
 		curr := st.pivotZones[i]
 
 		if pivotZonesOverlap(prev, curr) || curr.Direction != prev.Direction {
-			st.addPattern(currentGroup)
-			currentGroup = []*pivotZone{curr}
+			// 方向变化或重叠 = 当前走势结束，反向走势开始
+			groups = append(groups, current)
+			current = group{zones: []*pivotZone{curr}, dir: curr.Direction}
 		} else {
-			currentGroup = append(currentGroup, curr)
+			current.zones = append(current.zones, curr)
 		}
 	}
-	st.addPattern(currentGroup)
+	// 最后一组（当前正在进行的走势）暂不标记完成
+	groups = append(groups, current)
+
+	// 转换为 trendPattern，标记完成状态
+	st.patterns = nil
+	for gi, g := range groups {
+		isLast := gi == len(groups)-1
+		p := st.buildPattern(g.zones)
+		if !isLast {
+			// 非最后一组：走势已被后续反向走势破坏 → 标记为 completed
+			p.Completed = true
+			p.EndReason = "reverseBreak"
+		} else {
+			// 最后一组：当前走势，暂不标记完成
+			p.Completed = false
+			p.EndReason = ""
+		}
+		st.patterns = append(st.patterns, p)
+	}
 }
 
-// addPattern 从一组同向非重叠中枢创建一个走势类型。
-func (st *trendPatternState) addPattern(group []*pivotZone) {
+// buildPattern 从中枢组创建一个走势类型。
+func (st *trendPatternState) buildPattern(group []*pivotZone) *trendPattern {
 	if len(group) == 0 {
-		return
+		return nil
 	}
 
 	typeStr := "consolidation"
@@ -153,7 +235,7 @@ func (st *trendPatternState) addPattern(group []*pivotZone) {
 		ids[i] = zs.index
 	}
 
-	p := &trendPattern{
+	return &trendPattern{
 		Index:          len(st.patterns),
 		Type:           typeStr,
 		Direction:      dir,
@@ -164,9 +246,8 @@ func (st *trendPatternState) addPattern(group []*pivotZone) {
 		EndPrice:       endPrice,
 		High:           high,
 		Low:            low,
-		Completed:      true,
+		Completed:      false,
 	}
-	st.patterns = append(st.patterns, p)
 }
 
 // pivotZonesOverlap 检查两个中枢的完整波动区间是否有重叠。
@@ -183,11 +264,10 @@ func trendPatternToTypes(zs *trendPattern) types.TrendPattern {
 	return types.TrendPattern{
 		Direction: zs.Direction,
 		Type:      zs.Type,
-		Completed: zs.Completed,
-		StartPrice: zs.StartPrice,
-		EndPrice:   zs.EndPrice,
-		High:       zs.High,
-		Low:        zs.Low,
+		Completed: zs.Completed, EndReason: zs.EndReason, StartPrice: zs.StartPrice,
+		EndPrice: zs.EndPrice,
+		High:     zs.High,
+		Low:      zs.Low,
 	}
 }
 
