@@ -265,6 +265,96 @@ func testStrokesBuy3() []chanlun.StrokeInfo {
 	}
 }
 
+// ====== evaluateBuy2Transition 测试 ======
+
+func TestEvaluateBuy2Transition_Confirmed(t *testing.T) {
+	eng := New(nil)
+
+	// 先注册一笔一买
+	eng.mu.Lock()
+	eng.lastBuy1s["TEST"] = &types.Signal{
+		Symbol: "TEST",
+		Type:   types.SignalBuy1,
+		Price:  50,
+	}
+	eng.mu.Unlock()
+
+	// 添加一个二买候选信号
+	sig := &types.Signal{
+		SignalID: "TEST_BUY_2_1",
+		Symbol:   "TEST",
+		Type:     types.SignalBuy2,
+		State:    types.SignalCandidate,
+	}
+	eng.mu.Lock()
+	eng.activeSignals["TEST_BUY_2_1"] = sig
+	eng.mu.Unlock()
+
+	// 模拟回调笔完成：prev=down(低点45>买价50?), wait...
+	// prev.Low(45) > buy1.Price(50)? No. 所以不应确认
+
+	// 测试确认: prev.DirectionDown + latest.DirectionUp + prev.Low(52) > buy1.Price(50)
+	state := eng.evaluateBuy2Transition(sig,
+		chanlun.StrokeInfo{Index: 3, Direction: types.DirectionUp, StartPrice: 55, EndPrice: 60, High: 62, Low: 53},
+		chanlun.StrokeInfo{Index: 2, Direction: types.DirectionDown, StartPrice: 60, EndPrice: 52, High: 62, Low: 52},
+		nil,
+	)
+	if state != types.SignalConfirmed {
+		t.Errorf("确认条件满足时期望 confirmed, 实际 %s", state)
+	}
+}
+
+func TestEvaluateBuy2Transition_Invalidated(t *testing.T) {
+	eng := New(nil)
+
+	eng.mu.Lock()
+	eng.lastBuy1s["TEST"] = &types.Signal{
+		Symbol: "TEST",
+		Type:   types.SignalBuy1,
+		Price:  50,
+	}
+	eng.mu.Unlock()
+
+	sig := &types.Signal{
+		SignalID: "TEST_BUY_2_2",
+		Symbol:   "TEST",
+		Type:     types.SignalBuy2,
+		State:    types.SignalCandidate,
+	}
+	eng.mu.Lock()
+	eng.activeSignals["TEST_BUY_2_2"] = sig
+	eng.mu.Unlock()
+
+	// 最新笔是向下且低点≤一买价格 → 失效
+	state := eng.evaluateBuy2Transition(sig,
+		chanlun.StrokeInfo{Index: 4, Direction: types.DirectionDown, StartPrice: 55, EndPrice: 48, Low: 48},
+		chanlun.StrokeInfo{Index: 3, Direction: types.DirectionUp, StartPrice: 48, EndPrice: 55, High: 58, Low: 46},
+		nil,
+	)
+	if state != types.SignalInvalidated {
+		t.Errorf("失效条件满足时期望 invalidated, 实际 %s", state)
+	}
+}
+
+func TestEvaluateBuy2Transition_NoBuy1(t *testing.T) {
+	eng := New(nil)
+	// 没有一买记录的情况下调用
+	sig := &types.Signal{
+		SignalID: "TEST_BUY_2_3",
+		Symbol:   "NOBUY1",
+		Type:     types.SignalBuy2,
+		State:    types.SignalCandidate,
+	}
+	state := eng.evaluateBuy2Transition(sig,
+		chanlun.StrokeInfo{Index: 0, Direction: types.DirectionUp},
+		chanlun.StrokeInfo{Index: 1, Direction: types.DirectionDown},
+		nil,
+	)
+	if state != "" {
+		t.Errorf("无一买记录时应返回空, 实际 %s", state)
+	}
+}
+
 // ====== GetSignal / OnStructureChange 测试 ======
 
 func TestGetSignal_Found(t *testing.T) {
