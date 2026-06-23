@@ -6,45 +6,57 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
+	gosignal "os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
-	"trade/internal/binance"
 	"trade/internal/chanlun"
 	"trade/internal/config"
-	"trade/internal/ent"
 	"trade/internal/eventbus"
+	"trade/internal/gateway"
+	"trade/internal/ingest"
+	"trade/internal/levels"
 	"trade/internal/log"
+	"trade/internal/observability"
+	"trade/internal/resonance"
+	signals "trade/internal/signal"
+	"trade/internal/snapshot"
+	"trade/internal/state"
+	"trade/internal/structure"
 	"trade/internal/types"
-
-	"entgo.io/ent/dialect/sql"
-	_ "github.com/mattn/go-sqlite3"
 )
 
-// App 是缠论分析系统的主控对象，封装所有组件与生命周期。
+// App 是信号分析系统的主控对象，封装所有组件与生命周期。
 type App struct {
 	cfg    config.Config
 	logger *slog.Logger
 
-	bus *eventbus.Bus
-	db  *ent.Client
-	ws  *binance.WSClient
+	// === 基础设施 ===
+	bus      *eventbus.Bus                   // 旧事件总线（数据适配层路径）
+	gBus     *eventbus.GenericBus            // 通用事件总线（M1~M10 通信）
+	appState *state.Store                    // M7 状态存储
+	snapMgr  *snapshot.Manager               // M0 快照层
+	metrics  *observability.MetricsCollector // M10 Metrics
 
-	containProc *chanlun.ContainProcessor
-	fractalProc *chanlun.FractalProcessor
+	// === M2 缠论核心 ===
+	pipeline *chanlun.Pipeline // symbol 级处理管道
+	m3Bridge *chanlun.M3Bridge // M2 → M3 桥接器
 
-	// 订阅ID，关闭时需要取消注册。
-	dbSubID      int64
-	chanlunSubID int64
+	// === 模块 ===
+	ingestG   *ingest.IngestGateway      // M1 输入网关
+	tree      *structure.Tree            // M3 结构树
+	lvlBldr   *levels.LevelBuilder       // M4 递归级别
+	sigEngine *signals.SignalEngine      // M5 信号引擎
+	resEngine *resonance.ResonanceEngine // M6 共振引擎
+	gatewayS  *gateway.Gateway           // M8 输出网关
 
-	// 生命周期控制。
-	cancel context.CancelFunc
+	// 生命周期控制
+	cancel    context.CancelFunc
+	startTime time.Time
 }
 
 // New 根据配置构建 App，依次初始化所有子系统。
-// 返回的 App 尚未运行，需调用 Run 方法。
 func New(cfg config.Config) (*App, error) {
 	log.Init(log.Config{
 		Level:     cfg.LogLevel,
@@ -53,130 +65,147 @@ func New(cfg config.Config) (*App, error) {
 		Output:    os.Stdout,
 	})
 	logger := log.Component("main")
-	logger.Info("启动缠论分析系统", "config", fmt.Sprintf("%+v", cfg))
+	logger.Info("启动信号分析系统", "config", fmt.Sprintf("%+v", cfg))
 
-	// 确保数据目录存在。
-	if err := os.MkdirAll(filepath.Dir(cfg.DBFile()), 0755); err != nil {
-		return nil, fmt.Errorf("创建数据目录: %w", err)
+	// 确保数据目录存在
+	for _, dir := range []string{
+		filepath.Dir(cfg.DBFile()),
+		cfg.SnapshotDir,
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("创建目录 %s: %w", dir, err)
+		}
 	}
 
-	// 初始化事件总线。
+	// === 事件总线 ===
 	bus := eventbus.New()
+	gBus := eventbus.NewGeneric()
 
-	// 初始化数据库 — 直接使用 ent 生成的 ORM 客户端。
-	drv, err := sql.Open("sqlite3", cfg.DSN())
-	if err != nil {
-		return nil, fmt.Errorf("打开 sqlite: %w", err)
-	}
-	db := drv.DB()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(time.Hour)
+	// === M7 状态存储 ===
+	appState := state.New()
 
-	ec := ent.NewClient(ent.Driver(drv))
-	if err := ec.Schema.Create(context.Background()); err != nil {
-		return nil, fmt.Errorf("ent 迁移: %w", err)
-	}
+	// === M0 快照层 ===
+	snapMgr := snapshot.New(snapshot.Config{
+		SnapshotDir: cfg.SnapshotDir,
+		RetainCount: cfg.SnapshotRetain,
+	})
 
-	// 订阅数据库处理器：闭合 K 线写入数据库。
-	dbSubID := bus.Subscribe(types.EventKlineClosed, func(evt types.KlineEvent) {
-		if evt.Kline == nil {
+	// === M10 Metrics ===
+	metrics := observability.NewMetricsCollector()
+
+	// === M2 缠论核心 Pipeline ===
+	pipeline := chanlun.NewPipeline()
+
+	// === M3 结构树 ===
+	tree := structure.New(gBus)
+
+	// === M2 → M3 桥接器 ===
+	m3Bridge := chanlun.NewM3Bridge(pipeline, tree)
+
+	// === M4 递归级别 ===
+	lvlBldr := levels.New(gBus)
+
+	// === M5 信号引擎 ===
+	sigEngine := signals.New(gBus)
+
+	// === M6 共振引擎 ===
+	resEngine := resonance.New(gBus)
+
+	// === M1 输入网关 ===
+	ingestG := ingest.New(ingest.Config{
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: cfg.RedisPassword,
+		RedisDB:       cfg.RedisDB,
+		StreamPrefix:  cfg.StreamPrefix,
+		ConsumerGroup: cfg.ConsumerGroup,
+		Symbols:       cfg.Symbols,
+	}, gBus)
+
+	// === M8 输出网关 ===
+	gatewayS := gateway.New(cfg, gBus, sigEngine, tree)
+
+	// === 订阅 M1 事件 → M2 Pipeline → M3 结构树 ===
+	gBus.Subscribe(types.EventKlineReceived, func(evt types.Event) {
+		payload, ok := evt.Payload.(types.KlineReceivedPayload)
+		if !ok || payload.Kline == nil {
 			return
 		}
-		k := evt.Kline
-		_, err := ec.Kline.Create().
-			SetSymbol(k.Symbol).
-			SetOpen(k.Open.InexactFloat64()).
-			SetHigh(k.High.InexactFloat64()).
-			SetLow(k.Low.InexactFloat64()).
-			SetClose(k.Close.InexactFloat64()).
-			SetVolume(k.Volume.InexactFloat64()).
-			SetOpenTime(k.OpenTime).
-			SetCloseTime(k.CloseTime).
-			SetCreatedAt(time.Now()).
-			OnConflict(sql.ConflictColumns("symbol", "open_time")).
-			Ignore().
-			ID(context.Background())
+		committed, versionID, err := m3Bridge.OnKline(payload.Kline)
 		if err != nil {
-			logger.Error("写入 K 线失败",
-				"symbol", k.Symbol,
-				"openTime", k.OpenTime,
+			logger.Error("M3 桥接处理失败",
+				"symbol", evt.Symbol,
 				"error", err,
+			)
+			return
+		}
+		if committed {
+			logger.Debug("M3 版本已提交",
+				"symbol", evt.Symbol,
+				"versionId", versionID,
 			)
 		}
 	})
 
-	// 初始化缠论分析器。
-	containProc := chanlun.NewContainProcessor()
-	fractalProc := chanlun.NewFractalProcessor()
-
-	// 订阅实时K线事件 — 缠论分析。
-	chanlunSubID := bus.Subscribe(types.EventKlineRealtime, func(evt types.KlineEvent) {
-		elements := containProc.Process(evt.Kline)
-		if len(elements) > 0 {
-			last := elements[len(elements)-1]
-			fractals := fractalProc.Process(last)
-			if len(fractals) > 0 && fractals[len(fractals)-1].Confirmed {
-				logger.Debug("识别到分型",
-					"type", fractals[len(fractals)-1].Type,
-					"high", fractals[len(fractals)-1].High,
-					"low", fractals[len(fractals)-1].Low,
-				)
-			}
-		}
-	})
-
-	// K 线闭合时更新缠论状态。
-	bus.Subscribe(types.EventKlineClosed, func(evt types.KlineEvent) {
-		elements := containProc.Process(evt.Kline)
-		if len(elements) > 0 {
-			fractalProc.Process(elements[len(elements)-1])
-		}
-	})
-
-	// 创建 WebSocket 客户端。
-	wsClient := binance.NewWSClient(cfg.Symbols, cfg.Interval, bus)
-
 	return &App{
-		cfg:          cfg,
-		logger:       logger,
-		bus:          bus,
-		db:           ec,
-		ws:           wsClient,
-		containProc:  containProc,
-		fractalProc:  fractalProc,
-		dbSubID:      dbSubID,
-		chanlunSubID: chanlunSubID,
+		cfg:       cfg,
+		logger:    logger,
+		bus:       bus,
+		gBus:      gBus,
+		appState:  appState,
+		snapMgr:   snapMgr,
+		metrics:   metrics,
+		pipeline:  pipeline,
+		m3Bridge:  m3Bridge,
+		ingestG:   ingestG,
+		tree:      tree,
+		lvlBldr:   lvlBldr,
+		sigEngine: sigEngine,
+		resEngine: resEngine,
+		gatewayS:  gatewayS,
+		startTime: time.Now(),
 	}, nil
 }
 
-// Run 启动系统主循环，阻塞直到信号(SIGINT/SIGTERM)或内部异常退出。
+// Run 启动系统主循环。
 func (a *App) Run(ctx context.Context) error {
 	ctx, a.cancel = context.WithCancel(ctx)
 	defer a.cancel()
 
-	// 监听系统信号，触发优雅关闭。
+	// 监听系统信号
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigChan:
-			a.logger.Info("收到信号，正在关闭...")
-		case <-ctx.Done():
-		}
-		a.Shutdown()
-	}()
+	gosignal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	a.logger.Info("系统初始化完成，启动WebSocket流",
-		"symbols", a.cfg.Symbols,
-		"interval", a.cfg.Interval,
-	)
+	// 尝试从快照恢复
+	a.tryRestoreFromSnapshot()
 
-	if err := a.ws.Start(); err != nil {
-		return err
+	// 启动 M1 输入网关（Redis Stream 消费）
+	if err := a.ingestG.Start(ctx); err != nil {
+		return fmt.Errorf("启动输入网关: %w", err)
 	}
 
-	a.logger.Info("系统已停止")
+	// 启动 M8 输出网关（HTTP 服务，异步）
+	go func() {
+		if err := a.gatewayS.Start(); err != nil {
+			a.logger.Error("输出网关异常退出", "error", err)
+		}
+	}()
+
+	// 定期快照（PRD §12.3）
+	go a.snapshotLoop(ctx)
+
+	a.logger.Info("系统初始化完成",
+		"symbols", a.cfg.Symbols,
+		"http", fmt.Sprintf("%s:%d", a.cfg.HTTPAddr, a.cfg.HTTPPort),
+	)
+
+	// 等待退出信号
+	select {
+	case <-sigChan:
+		a.logger.Info("收到信号，正在关闭...")
+	case <-ctx.Done():
+	}
+
+	a.Shutdown()
 	return nil
 }
 
@@ -184,31 +213,85 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) Shutdown() {
 	a.logger.Info("正在关闭子系统...")
 
-	// 取消注册事件订阅。
-	a.bus.Unsubscribe(types.EventKlineRealtime, a.chanlunSubID)
-	a.bus.Unsubscribe(types.EventKlineClosed, a.dbSubID)
-
-	// 停止 WebSocket 客户端。
-	a.ws.Stop()
-
-	// 关闭数据库连接。
-	if err := a.db.Close(); err != nil {
-		a.logger.Error("关闭数据库失败", "error", err)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.gatewayS.Stop(shutdownCtx); err != nil {
+		a.logger.Error("关闭输出网关失败", "error", err)
 	}
+
+	a.ingestG.Stop()
 
 	if a.cancel != nil {
 		a.cancel()
 	}
-
 	a.logger.Info("系统已关闭")
 }
 
-// Bus 暴露事件总线（用于测试或扩展）。
+// tryRestoreFromSnapshot 尝试从快照恢复（PRD §14.5.3）。
+func (a *App) tryRestoreFromSnapshot() {
+	for _, symbol := range a.cfg.Symbols {
+		snap, ok := a.snapMgr.RestoreLatest(symbol)
+		if !ok {
+			a.logger.Info("无可用快照，从零开始", "symbol", symbol)
+			continue
+		}
+
+		if snap.RedisOffset != "" {
+			a.appState.SetRedisOffset(symbol, snap.RedisOffset)
+			a.ingestG.RestoreOffset(symbol, snap.RedisOffset)
+		}
+		if snap.DualTrack != nil {
+			a.appState.SetDualTrack(symbol, snap.DualTrack)
+		}
+		for _, sig := range snap.Signals {
+			a.appState.AddSignal(sig)
+		}
+
+		a.logger.Info("从快照恢复", "symbol", symbol, "offset", snap.RedisOffset)
+	}
+}
+
+// snapshotLoop 定期执行快照。
+func (a *App) snapshotLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Duration(a.cfg.SnapshotPeriod) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			a.takeSnapshot()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// takeSnapshot 执行所有 symbol 的快照。
+func (a *App) takeSnapshot() {
+	for _, symbol := range a.cfg.Symbols {
+		offset, _ := a.appState.GetRedisOffset(symbol)
+		dualTrack := a.appState.GetDualTrack(symbol)
+		signalList := a.appState.GetSignals(symbol)
+
+		snap := &snapshot.Snapshot{
+			Symbol:      symbol,
+			RedisOffset: offset,
+			Signals:     signalList,
+			DualTrack:   dualTrack,
+		}
+
+		if err := a.snapMgr.Take(snap); err != nil {
+			a.logger.Error("快照失败", "symbol", symbol, "error", err)
+		}
+	}
+}
+
+// Bus 暴露旧事件总线（测试用）。
 func (a *App) Bus() *eventbus.Bus {
 	return a.bus
 }
 
-// DB 暴露数据库客户端（用于测试或扩展）。
-func (a *App) DB() *ent.Client {
-	return a.db
+// GBus 暴露通用事件总线（测试用）。
+func (a *App) GBus() *eventbus.GenericBus {
+	return a.gBus
 }

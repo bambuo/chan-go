@@ -1,0 +1,255 @@
+// Package chanlun 笔识别算法综合测试。
+package chanlun
+
+import (
+	"testing"
+
+	"trade/internal/eventbus"
+	"trade/internal/structure"
+	"trade/internal/types"
+)
+
+// ====== 辅助函数 ======
+
+// mkElem id 为唯一标识，用于生成 OpenTime。
+func mkElem(high, low float64, fractalType types.FractalType, id int) *types.ChanKline {
+	return &types.ChanKline{
+		High:        high,
+		Low:         low,
+		FractalType: fractalType,
+		MergedFrom:  1,
+		OpenTime:    int64(id*100000 + 1),
+	}
+}
+
+// linkChain 将一组元素链成双向链表。
+func linkChain(elems []*types.ChanKline) {
+	for i := 0; i < len(elems); i++ {
+		if i > 0 {
+			elems[i].PrevElement = elems[i-1]
+		}
+		if i < len(elems)-1 {
+			elems[i].NextElement = elems[i+1]
+		}
+	}
+}
+
+// TestBi_BasicUpBi 底分型(0)→顶分型(3)，非严格模式，跨度=3。
+func TestBi_BasicUpBi(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(13, 7, types.FractalNone, 1),
+		mkElem(16, 10, types.FractalNone, 2),
+		mkElem(22, 18, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 22, Low: 18, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) == 0 {
+		t.Fatal("期望至少 1 条笔")
+	}
+	if bis[0].Direction != types.DirectionUp {
+		t.Errorf("方向期望 up, 实际 %s", bis[0].Direction)
+	}
+	if bis[0].Start != elems[0] {
+		t.Error("起点应为 elems[0]（底分型）")
+	}
+}
+
+// TestBi_BasicDownBi 顶→底，非严格模式。
+func TestBi_BasicDownBi(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(25, 20, types.FractalTop, 0),
+		mkElem(20, 15, types.FractalNone, 1),
+		mkElem(15, 10, types.FractalNone, 2),
+		mkElem(10, 5, types.FractalBottom, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalTop, Index: 0, High: 25, Low: 20, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalBottom, Index: 3, High: 10, Low: 5, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) == 0 {
+		t.Fatal("期望至少 1 条笔")
+	}
+	if bis[0].Direction != types.DirectionDown {
+		t.Errorf("方向期望 down, 实际 %s", bis[0].Direction)
+	}
+}
+
+// TestBi_SameTypeUpdateEnd 同类分型更新终点（§8）。
+func TestBi_SameTypeUpdateEnd(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(15, 8, types.FractalNone, 1),
+		mkElem(20, 12, types.FractalTop, 2),
+		mkElem(25, 18, types.FractalNone, 3),
+		mkElem(30, 22, types.FractalTop, 4),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], []types.Fractal{
+		{Type: types.FractalTop, Index: 2, High: 20, Low: 12, Confirmed: true},
+	})
+	bp.Process("TEST", elems[3], nil)
+	bp.Process("TEST", elems[4], []types.Fractal{
+		{Type: types.FractalTop, Index: 4, High: 30, Low: 22, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) != 1 {
+		t.Fatalf("期望 1 条笔（同类更新）, 实际 %d", len(bis))
+	}
+	if bis[0].End != elems[4] {
+		t.Error("终点应为 elems[4]（更高的顶）")
+	}
+}
+
+// TestBi_SpanStrict 严格模式跨度=3 不成笔。
+func TestBi_SpanStrict(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(12, 7, types.FractalNone, 1),
+		mkElem(14, 9, types.FractalNone, 2),
+		mkElem(20, 15, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = true
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 20, Low: 15, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) != 0 {
+		t.Errorf("严格模式跨度=3 应不成笔, 实际 %d 条", len(bis))
+	}
+}
+
+// TestBi_SpanNonStrict 非严格模式跨度=3 可成笔。
+func TestBi_SpanNonStrict(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(12, 7, types.FractalNone, 1),
+		mkElem(14, 9, types.FractalNone, 2),
+		mkElem(20, 15, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 20, Low: 15, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) != 1 {
+		t.Errorf("非严格模式跨度=3 应成笔, 实际 %d 条", len(bis))
+	}
+}
+
+// TestBi_FirstBiCandidates 多个候选后异类分型成第一笔（§4）。
+func TestBi_FirstBiCandidates(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(12, 6, types.FractalBottom, 0),
+		mkElem(10, 7, types.FractalBottom, 1),
+		mkElem(14, 9, types.FractalNone, 2),
+		mkElem(20, 15, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 12, Low: 6, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 20, Low: 15, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) != 1 {
+		t.Fatalf("期望 1 条笔, 实际 %d", len(bis))
+	}
+	if bis[0].Direction != types.DirectionUp {
+		t.Errorf("方向期望 up, 实际 %s", bis[0].Direction)
+	}
+}
+
+// TestBi_PipelineIntegration 完整 contain→fractal→stroke pipeline。
+func TestBi_PipelineIntegration(t *testing.T) {
+	p := NewPipeline()
+	klines := []float64{30, 25, 35, 28, 45, 38, 40, 32}
+	for i := 0; i < len(klines); i += 2 {
+		raw := mkline((klines[i+1] - 3), klines[i], klines[i+1]-8, klines[i+1]-5, int64(i/2), "TEST_PIPE")
+		p.Process(raw)
+	}
+	state := p.GetState("TEST_PIPE")
+	t.Logf("元素: %d, 分型: %d, 笔: %d", len(state.AllElements), len(state.AllFractals), len(state.Strokes))
+}
+
+// TestBi_M3Bridge 笔信息通过 M3Bridge 写入结构树。
+func TestBi_M3Bridge(t *testing.T) {
+	gBus := eventbus.NewGeneric()
+	tree := structure.New(gBus)
+	pipeline := NewPipeline()
+	bridge := NewM3Bridge(pipeline, tree)
+
+	pattern := []float64{10, 5, 15, 8, 22, 14, 18, 10, 14, 6}
+	for i := 0; i < len(pattern); i += 2 {
+		high := pattern[i]
+		low := pattern[i+1]
+		kline := mkline(low+1, high, low, high-2, int64(i/2), "TEST_BRIDGE")
+		bridge.OnKline(kline)
+	}
+
+	state := tree.GetCurrentState("TEST_BRIDGE", types.LevelL1)
+	if state != nil {
+		t.Logf("M3 L1 笔数: %d", len(state.Provisional.Strokes))
+	}
+}

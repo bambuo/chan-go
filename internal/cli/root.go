@@ -1,9 +1,9 @@
 // Package cli 提供 cobra 命令行定义。
-// 所有业务逻辑委托给 internal/app 包。
 package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
@@ -15,14 +15,22 @@ import (
 )
 
 const (
-	defaultLogLevel = "info"
-	defaultLogJSON  = true
-	defaultDBPath   = "data/klines.db"
-	defaultSymbols  = "btcusdt,ethusdt"
-	defaultInterval = "1m"
+	defaultLogLevel       = "info"
+	defaultLogJSON        = true
+	defaultDBPath         = "data/klines.db"
+	defaultSymbols        = "BTCUSDT,ETHUSDT"
+	defaultInterval       = "1m"
+	defaultRedisAddr      = "localhost:6379"
+	defaultHTTPAddr       = "0.0.0.0"
+	defaultHTTPPort       = 8080
+	defaultSnapshotDir    = "data/snapshots"
+	defaultSnapshotPeriod = 300
+	defaultRetainSnapshot = 24
+	defaultRateLimit      = 50
+	defaultWSChannelMax   = 20
 )
 
-// Execute 运行根命令。
+// Execute runs the root command.
 func Execute() {
 	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
@@ -32,11 +40,12 @@ func Execute() {
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
-		Short: "缠论K线分析系统",
-		Long: `基于币安1分钟K线数据流的缠中说禅K线分析系统。
+		Short: "信号分析系统",
+		Long: `基于缠中说禅理论的实时信号分析引擎。
 
-订阅指定交易对的实时K线流，经过包含处理和分型分析，
-并将闭合K线持久化到SQLite数据库中。`,
+作为黑盒计算引擎消费 Redis Stream 中的 K 线数据，
+计算多级别缠论结构并产出结构化买卖点信号，
+通过 REST API 和 WebSocket 对外输出。`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			viper.SetEnvPrefix("CL")
 			viper.AutomaticEnv()
@@ -53,39 +62,84 @@ func newRootCmd() *cobra.Command {
 	}
 
 	flags := cmd.Flags()
+
+	// === 日志 ===
 	flags.String("log-level", envDefault("CL_LOG_LEVEL", defaultLogLevel),
-		"日志级别 (debug/info/warn/error)  [env: CL_LOG_LEVEL]")
+		"日志级别 (debug/info/warn/error)")
 	flags.Bool("log-json", envDefaultBool("CL_LOG_JSON", defaultLogJSON),
-		"JSON 格式输出日志  [env: CL_LOG_JSON]")
-	flags.String("db", envDefault("CL_DB_PATH", defaultDBPath),
-		"SQLite 数据库路径  [env: CL_DB_PATH]")
+		"JSON 格式输出日志")
+
+	// === 数据源 ===
 	flags.String("symbols", envDefault("CL_SYMBOLS", defaultSymbols),
-		"交易对列表，逗号分隔  [env: CL_SYMBOLS]")
+		"交易对列表，逗号分隔（大写，如 BTCUSDT,ETHUSDT）")
 	flags.String("interval", envDefault("CL_INTERVAL", defaultInterval),
-		"K线时间周期  [env: CL_INTERVAL]")
+		"K线时间周期")
+
+	// === Redis（M1 输入网关）===
+	flags.String("redis-addr", envDefault("CL_REDIS_ADDR", defaultRedisAddr),
+		"Redis 地址")
+	flags.String("redis-password", envDefault("CL_REDIS_PASSWORD", ""),
+		"Redis 密码")
+	flags.Int("redis-db", envDefaultInt("CL_REDIS_DB", 0),
+		"Redis DB 编号")
+
+	// === HTTP（M8 输出网关）===
+	flags.String("http-addr", envDefault("CL_HTTP_ADDR", defaultHTTPAddr),
+		"HTTP 监听地址")
+	flags.Int("http-port", envDefaultInt("CL_HTTP_PORT", defaultHTTPPort),
+		"HTTP 端口")
+	flags.Int("rate-limit", envDefaultInt("CL_RATE_LIMIT", defaultRateLimit),
+		"REST 每秒请求上限")
+	flags.Int("ws-channel-max", envDefaultInt("CL_WS_CHANNEL_MAX", defaultWSChannelMax),
+		"WS 每连接最大 channel 数")
+
+	// === 快照（M0）===
+	flags.String("snapshot-dir", envDefault("CL_SNAPSHOT_DIR", defaultSnapshotDir),
+		"快照存储目录")
+	flags.Int("snapshot-period", envDefaultInt("CL_SNAPSHOT_PERIOD", defaultSnapshotPeriod),
+		"快照周期（秒）")
+	flags.Int("snapshot-retain", envDefaultInt("CL_SNAPSHOT_RETAIN", defaultRetainSnapshot),
+		"保留最近快照数")
+
+	// === 数据库 ===
+	flags.String("db", envDefault("CL_DB_PATH", defaultDBPath),
+		"SQLite 数据库路径")
 
 	return cmd
 }
 
 // parseConfig 从 viper 读取配置。
 func parseConfig() config.Config {
-	var cfg config.Config
+	cfg := config.Default()
 
 	cfg.LogLevel = viper.GetString("log-level")
 	cfg.LogJSON = viper.GetBool("log-json")
-	cfg.DBPath = viper.GetString("db")
 
 	for _, s := range splitAndTrim(viper.GetString("symbols"), ",") {
 		if s != "" {
-			cfg.Symbols = append(cfg.Symbols, s)
+			cfg.Symbols = append(cfg.Symbols, strings.ToUpper(s))
 		}
 	}
-
 	cfg.Interval = viper.GetString("interval")
+
+	cfg.RedisAddr = viper.GetString("redis-addr")
+	cfg.RedisPassword = viper.GetString("redis-password")
+	cfg.RedisDB = viper.GetInt("redis-db")
+
+	cfg.HTTPAddr = viper.GetString("http-addr")
+	cfg.HTTPPort = viper.GetInt("http-port")
+	cfg.RateLimitRPS = viper.GetInt("rate-limit")
+	cfg.WSChannelMax = viper.GetInt("ws-channel-max")
+
+	cfg.SnapshotDir = viper.GetString("snapshot-dir")
+	cfg.SnapshotPeriod = viper.GetInt("snapshot-period")
+	cfg.SnapshotRetain = viper.GetInt("snapshot-retain")
+
+	cfg.DBPath = viper.GetString("db")
+
 	return cfg
 }
 
-// envDefault 环境变量值或备用默认值。
 func envDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -104,6 +158,18 @@ func envDefaultBool(key string, def bool) bool {
 	default:
 		return false
 	}
+}
+
+func envDefaultInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+		return def
+	}
+	return n
 }
 
 func splitAndTrim(s, sep string) []string {

@@ -142,13 +142,37 @@ func (p *ContainProcessor) Reset() {
 	p.lastMergeTarget = nil
 }
 
-// nonContained 返回非包含元素的序列。
+// nonContained 返回非包含元素的序列，并重建 Prev/Next 链表指针。
 func (p *ContainProcessor) nonContained() []*types.ChanKline {
 	result := make([]*types.ChanKline, 0, len(p.elements))
 	for _, e := range p.elements {
 		if !e.Contained {
 			result = append(result, e)
 		}
+	}
+	// 重建 Prev/Next 链表指针
+	for i := 0; i < len(result); i++ {
+		if i > 0 {
+			result[i].PrevElement = result[i-1]
+		} else {
+			result[i].PrevElement = nil
+		}
+		if i < len(result)-1 {
+			result[i].NextElement = result[i+1]
+		} else {
+			result[i].NextElement = nil
+		}
+	}
+	// 更新每个元素的方向
+	for i := 1; i < len(result); i++ {
+		dir := p.determineDirection(result[i-1], result[i])
+		if dir == types.DirectionNone {
+			dir = types.DirectionUp
+		}
+		result[i].Direction = dir
+	}
+	if len(result) > 0 {
+		result[0].Direction = types.DirectionNone
 	}
 	return result
 }

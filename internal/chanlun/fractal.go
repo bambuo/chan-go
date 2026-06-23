@@ -107,6 +107,7 @@ func (p *FractalProcessor) scanLast3() {
 	if mid.High > first.High && mid.High > last.High {
 		// 确保不重复注册同一分型。
 		if len(p.fractals) == 0 || p.fractals[len(p.fractals)-1].Index != n-2 {
+			mid.FractalType = types.FractalTop
 			p.fractals = append(p.fractals, types.Fractal{
 				Type:     types.FractalTop,
 				Index:    n - 2,
@@ -120,6 +121,7 @@ func (p *FractalProcessor) scanLast3() {
 	// 检查底分型：中间元素低点最低。
 	if mid.Low < first.Low && mid.Low < last.Low {
 		if len(p.fractals) == 0 || p.fractals[len(p.fractals)-1].Index != n-2 {
+			mid.FractalType = types.FractalBottom
 			p.fractals = append(p.fractals, types.Fractal{
 				Type:     types.FractalBottom,
 				Index:    n - 2,

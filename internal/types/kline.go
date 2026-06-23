@@ -13,31 +13,37 @@ const (
 	EventKlineRealtime KlineEventType = "kline.realtime"
 )
 
-// Kline 表示来自币安的标准K线数据点。
+// Kline 表示来自交易所的标准K线数据点（PRD §12.1）。
 type Kline struct {
-	Symbol    string          `json:"symbol"`
-	Open      decimal.Decimal `json:"open"`
-	High      decimal.Decimal `json:"high"`
-	Low       decimal.Decimal `json:"low"`
-	Close     decimal.Decimal `json:"close"`
-	Volume    decimal.Decimal `json:"volume"`
-	OpenTime  int64           `json:"openTime"`  // Unix毫秒
-	CloseTime int64           `json:"closeTime"` // Unix毫秒
-	IsClosed  bool            `json:"isClosed"`  // 该K线是否已闭合
+	Symbol      string          `json:"symbol"`
+	Open        decimal.Decimal `json:"open"`
+	High        decimal.Decimal `json:"high"`
+	Low         decimal.Decimal `json:"low"`
+	Close       decimal.Decimal `json:"close"`
+	BaseVolume  decimal.Decimal `json:"baseVolume"`  // 基础资产成交量
+	QuoteVolume decimal.Decimal `json:"quoteVolume"` // 计价资产成交量（如 USDT）
+	Turnover    decimal.Decimal `json:"turnover"`    // 成交额
+	TradeCount  int64           `json:"tradeCount"`  // 成交笔数
+	OpenTime    int64           `json:"openTime"`    // Unix毫秒
+	CloseTime   int64           `json:"closeTime"`   // Unix毫秒
+	IsClosed    bool            `json:"isClosed"`    // 该K线是否已闭合
 }
 
 // Clone 返回Kline的深拷贝。
 func (k *Kline) Clone() *Kline {
 	return &Kline{
-		Symbol:    k.Symbol,
-		Open:      k.Open,
-		High:      k.High,
-		Low:       k.Low,
-		Close:     k.Close,
-		Volume:    k.Volume,
-		OpenTime:  k.OpenTime,
-		CloseTime: k.CloseTime,
-		IsClosed:  k.IsClosed,
+		Symbol:      k.Symbol,
+		Open:        k.Open,
+		High:        k.High,
+		Low:         k.Low,
+		Close:       k.Close,
+		BaseVolume:  k.BaseVolume,
+		QuoteVolume: k.QuoteVolume,
+		Turnover:    k.Turnover,
+		TradeCount:  k.TradeCount,
+		OpenTime:    k.OpenTime,
+		CloseTime:   k.CloseTime,
+		IsClosed:    k.IsClosed,
 	}
 }
 
@@ -70,15 +76,18 @@ func (d ChanDirection) String() string {
 // ChanKline 经缠论包含处理后的K线元素。
 // 同时保存原始数据和算法所需的计算引用。
 type ChanKline struct {
-	High       float64       // 包含处理后的高点
-	Low        float64       // 包含处理后的低点
-	RawHigh    float64       // 包含处理前的原始高点
-	RawLow     float64       // 包含处理前的原始低点
-	OpenTime   int64         // Unix毫秒
-	CloseTime  int64         // Unix毫秒
-	Direction  ChanDirection // 相对于前一个元素的方向
-	Contained  bool          // 该元素是否被前一个元素包含（合并）
-	MergedFrom int           // 合并入该元素的原始K线数量（>=1）
+	High        float64       // 包含处理后的高点
+	Low         float64       // 包含处理后的低点
+	RawHigh     float64       // 包含处理前的原始高点
+	RawLow      float64       // 包含处理前的原始低点
+	OpenTime    int64         // Unix毫秒
+	CloseTime   int64         // Unix毫秒
+	Direction   ChanDirection // 相对于前一个元素的方向
+	Contained   bool          // 该元素是否被前一个元素包含（合并）
+	MergedFrom  int           // 合并入该元素的原始K线数量（>=1）
+	FractalType FractalType   // 该元素是否为分型（笔算法使用）
+	PrevElement *ChanKline    // 前一个非包含元素（链表指针，笔算法使用）
+	NextElement *ChanKline    // 后一个非包含元素（链表指针，笔算法使用）
 }
 
 // FractalType 标识分型类型。

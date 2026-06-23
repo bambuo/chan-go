@@ -22,14 +22,14 @@ func TestBus_PublishSubscribe(t *testing.T) {
 	event := types.KlineEvent{
 		Type: types.EventKlineClosed,
 		Kline: &types.Kline{
-			Symbol:   "BTCUSDT",
-			Open:     decimal.NewFromFloat(50000),
-			High:     decimal.NewFromFloat(51000),
-			Low:      decimal.NewFromFloat(49000),
-			Close:    decimal.NewFromFloat(50500),
-			Volume:   decimal.NewFromFloat(100),
-			OpenTime: time.Now().UnixMilli(),
-			IsClosed: true,
+			Symbol:     "BTCUSDT",
+			Open:       decimal.NewFromFloat(50000),
+			High:       decimal.NewFromFloat(51000),
+			Low:        decimal.NewFromFloat(49000),
+			Close:      decimal.NewFromFloat(50500),
+			BaseVolume: decimal.NewFromFloat(100),
+			OpenTime:   time.Now().UnixMilli(),
+			IsClosed:   true,
 		},
 	}
 
