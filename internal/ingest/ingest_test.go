@@ -1,6 +1,6 @@
 // Package ingest M1 输入网关的端到端集成测试。
 //
-// 前置条件：Docker Redis 运行在 localhost:6380
+// 前置条件：Docker Redis 运行在 localhost:6379
 // 测试内容：
 //   - Redis Stream 写入 K 线 → M1 消费 → eventbus 分发 EventKlineReceived
 //   - 非法 K 线（ts 倒退、字段缺失）→ EventKlineRejected
@@ -21,7 +21,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const testRedisAddr = "localhost:6380"
+const testRedisAddr = "localhost:6379"
 
 // TestIngestE2E_BasicFlow 验证：写入有效 K 线 → M1 消费 → EventKlineReceived
 func TestIngestE2E_BasicFlow(t *testing.T) {

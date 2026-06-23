@@ -30,7 +30,7 @@ import (
 
 // Config M1 输入网关配置。
 type Config struct {
-	RedisAddr     string   // Redis 地址（如 "localhost:6380"）
+	RedisAddr     string   // Redis 地址（如 "localhost:6379"）
 	RedisPassword string   // Redis 密码
 	RedisDB       int      // Redis DB 编号
 	StreamPrefix  string   // Stream 前缀（默认 "chan:klines"）
