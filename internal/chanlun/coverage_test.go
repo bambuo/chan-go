@@ -122,43 +122,6 @@ func TestClearVirtualStroke_RestorePreviousEnd(t *testing.T) {
 	}
 }
 
-// ====== checkFractalValidity 测试 ======
-
-func TestCheckFractalValidity(t *testing.T) {
-	state := &strokeState{}
-
-	// loose 模式: end.High > start.High && end.Low < start.Low
-	start := mkElem(10, 5, types.FractalBottom, 0)
-	end := mkElem(22, 3, types.FractalTop, 3)
-	linkChain([]*types.ChanKline{start, end})
-
-	state.cfg.FractalCheck = "loose"
-	ok := state.checkFractalValidity(start, end)
-	if !ok {
-		t.Error("loose 模式: end.High(22)>start.High(10) && end.Low(3)<start.Low(5) 应通过")
-	}
-
-	// half 模式需要中间元素参与计算
-	// end.Low(12) > start.Low(5) 确保 start.Low < endLow
-	start2 := mkElem(10, 5, types.FractalBottom, 0)
-	mid := mkElem(15, 8, types.FractalNone, 1)
-	end2 := mkElem(22, 12, types.FractalTop, 3)
-	linkChain([]*types.ChanKline{start2, mid, end2})
-
-	state.cfg.FractalCheck = "half"
-	ok = state.checkFractalValidity(start2, end2)
-	if !ok {
-		t.Error("half 模式: 有中间元素时应通过")
-	}
-
-	// 未知模式走 half
-	state.cfg.FractalCheck = "unknown"
-	ok = state.checkFractalValidity(start2, end2)
-	if !ok {
-		t.Error("未知模式走后默认 half, 应通过")
-	}
-}
-
 // ====== ProcessBatch 测试 ======
 
 func TestProcessBatch_Basic(t *testing.T) {

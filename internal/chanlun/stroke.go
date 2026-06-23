@@ -227,10 +227,7 @@ func (s *strokeState) processConfirmedFractal(elem *types.ChanKline) {
 
 	// 若新分型与最后终点类型相同（同为顶或同为底），尝试更新终点（§8）
 	if elem.FractalType == s.lastEndpoint.FractalType {
-		if s.tryUpdateEndpoint(elem, lastStroke) {
-			// 尝试次高/次低修正（§9）
-			s.trySubPeakCorrection(elem)
-		}
+		s.tryUpdateEndpoint(elem, lastStroke)
 		return
 	}
 
@@ -286,15 +283,8 @@ func (s *strokeState) canFormStroke(start, end *types.ChanKline) bool {
 		return false
 	}
 
-	// §5.4: 分型有效性检查（默认"半"）
-	if !s.checkFractalValidity(start, end) {
-		return false
-	}
-
-	// §5.5: 终点峰值检查
-	if s.cfg.PeakEndPoint && !s.checkPeakEndPoint(start, end) {
-		return false
-	}
+	// §5.4: 分型有效性检查（缠论原文无此定义，通过）
+	// §5.5: 终点峰值检查（缠论原文无此定义，通过）
 
 	return true
 }
@@ -338,126 +328,6 @@ func (s *strokeState) checkPriceRange(start, end *types.ChanKline) bool {
 	return end.Low < start.High
 }
 
-// checkFractalValidity 检查分型有效性（笔.md §6，默认"半"方法）。
-func (s *strokeState) checkFractalValidity(start, end *types.ChanKline) bool {
-	switch s.cfg.FractalCheck {
-	case "loose":
-		return s.checkFractalLoose(start, end)
-	case "half":
-		return s.checkFractalHalf(start, end)
-	case "strict":
-		return s.checkFractalStrict(start, end)
-	case "full":
-		return s.checkFractalFull(start, end)
-	default:
-		return s.checkFractalHalf(start, end)
-	}
-}
-
-// checkFractalLoose 宽松检查（笔.md §6.1/6.2）。
-func (s *strokeState) checkFractalLoose(start, end *types.ChanKline) bool {
-	if start.FractalType == types.FractalTop {
-		// 顶分型起点：终点低点 > 起点高点
-		return end.Low > start.High
-	}
-	// 底分型起点：终点高点 > 起点高点 且 终点低点 < 起点低点
-	return end.High > start.High && end.Low < start.Low
-}
-
-// checkFractalHalf "半"检查（笔.md §6.1/6.2，默认）。
-func (s *strokeState) checkFractalHalf(start, end *types.ChanKline) bool {
-	if start.FractalType == types.FractalTop {
-		// 顶分型起点：endHigh = max(end.Prev.High, end.High), startLow = min(start.Low, start.Next.Low)
-		endHigh := end.High
-		if end.PrevElement != nil && end.PrevElement.High > endHigh {
-			endHigh = end.PrevElement.High
-		}
-		startLow := start.Low
-		if start.NextElement != nil && start.NextElement.Low < startLow {
-			startLow = start.NextElement.Low
-		}
-		return start.High > endHigh && end.Low < startLow
-	}
-	// 底分型起点：endLow = min(end.Prev.Low, end.Low), startHigh = max(start.High, start.Next.High)
-	endLow := end.Low
-	if end.PrevElement != nil && end.PrevElement.Low < endLow {
-		endLow = end.PrevElement.Low
-	}
-	startHigh := start.High
-	if start.NextElement != nil && start.NextElement.High > startHigh {
-		startHigh = start.NextElement.High
-	}
-	return start.Low < endLow && end.High > startHigh
-}
-
-// checkFractalStrict 严格检查（笔.md §6.1/6.2）。
-func (s *strokeState) checkFractalStrict(start, end *types.ChanKline) bool {
-	if start.FractalType == types.FractalTop {
-		endHigh := end.High
-		if end.PrevElement != nil && end.PrevElement.High > endHigh {
-			endHigh = end.PrevElement.High
-		}
-		if end.NextElement != nil && end.NextElement.High > endHigh {
-			endHigh = end.NextElement.High
-		}
-		startLow := start.Low
-		if start.PrevElement != nil && start.PrevElement.Low < startLow {
-			startLow = start.PrevElement.Low
-		}
-		if start.NextElement != nil && start.NextElement.Low < startLow {
-			startLow = start.NextElement.Low
-		}
-		return start.High > endHigh && end.Low < startLow
-	}
-	endLow := end.Low
-	if end.PrevElement != nil && end.PrevElement.Low < endLow {
-		endLow = end.PrevElement.Low
-	}
-	if end.NextElement != nil && end.NextElement.Low < endLow {
-		endLow = end.NextElement.Low
-	}
-	startHigh := start.High
-	if start.PrevElement != nil && start.PrevElement.High > startHigh {
-		startHigh = start.PrevElement.High
-	}
-	if start.NextElement != nil && start.NextElement.High > startHigh {
-		startHigh = start.NextElement.High
-	}
-	return start.Low < endLow && end.High > startHigh
-}
-
-// checkFractalFull 完全分离检查（笔.md §6.1/6.2）。
-func (s *strokeState) checkFractalFull(start, end *types.ChanKline) bool {
-	if start.FractalType == types.FractalTop {
-		return start.Low > end.High
-	}
-	return start.High < end.Low
-}
-
-// checkPeakEndPoint 终点峰值检查（笔.md §7）。
-func (s *strokeState) checkPeakEndPoint(start, end *types.ChanKline) bool {
-	if start.FractalType == types.FractalBottom {
-		// 上升笔：终点必须是区间内最高价
-		curr := start.NextElement
-		for curr != nil && curr != end {
-			if curr.High > end.High {
-				return false
-			}
-			curr = curr.NextElement
-		}
-		return true
-	}
-	// 下降笔：终点必须是区间内最低价
-	curr := start.NextElement
-	for curr != nil && curr != end {
-		if curr.Low < end.Low {
-			return false
-		}
-		curr = curr.NextElement
-	}
-	return true
-}
-
 // tryUpdateEndpoint 同类分型更新终点（笔.md §8）。
 // 返回 true 表示更新成功。
 func (s *strokeState) tryUpdateEndpoint(newFractal *types.ChanKline, lastStroke *stroke) bool {
@@ -483,65 +353,6 @@ func (s *strokeState) tryUpdateEndpoint(newFractal *types.ChanKline, lastStroke 
 		}
 	}
 	return false
-}
-
-// trySubPeakCorrection 次高/次低修正（笔.md §9）。
-func (s *strokeState) trySubPeakCorrection(elem *types.ChanKline) {
-	if s.cfg.AllowSubPeak {
-		return
-	}
-	if len(s.strokes) < 2 {
-		return
-	}
-
-	lastStroke := s.strokes[len(s.strokes)-1]
-	prevStroke := s.strokes[len(s.strokes)-2]
-
-	// 条件 2：待处理的分型与上一笔的方向匹配
-	if lastStroke.Direction == types.DirectionUp && elem.FractalType == types.FractalBottom {
-		return // 向上笔不处理低于起点的低点
-	}
-	if lastStroke.Direction == types.DirectionDown && elem.FractalType == types.FractalTop {
-		return // 向下笔不处理高于起点的高点
-	}
-
-	// 条件 3：待处理分型与前一笔起点相比是有效峰值
-	if lastStroke.Direction == types.DirectionUp {
-		if elem.High <= prevStroke.Start.High {
-			return
-		}
-	} else {
-		if elem.Low >= prevStroke.Start.Low {
-			return
-		}
-	}
-
-	// 条件 4：上一笔的终点值没有跨过前一笔的起点值
-	if lastStroke.Direction == types.DirectionUp && lastStroke.End.Low <= prevStroke.Start.Low {
-		return
-	}
-	if lastStroke.Direction == types.DirectionDown && lastStroke.End.High >= prevStroke.Start.High {
-		return
-	}
-
-	// 执行修正：移除最后一笔，尝试更新新的最后一笔的终点
-	removed := s.strokes[len(s.strokes)-1]
-	removedIdx := removed.Index
-	s.strokes = s.strokes[:len(s.strokes)-1]
-	s.strokeRemoved = true
-	s.strokeRemovedIdx = removedIdx
-
-	if len(s.strokes) > 0 {
-		newLast := s.strokes[len(s.strokes)-1]
-		if s.tryUpdateEndpoint(elem, newLast) {
-			return // 修正成功
-		}
-	}
-
-	// 修正失败，恢复被移除的笔
-	s.strokes = append(s.strokes, removed)
-	s.strokeRemoved = false
-	s.strokeRemovedIdx = -1
 }
 
 // clearVirtualStroke 清理或恢复虚笔（笔.md §10.1）。
