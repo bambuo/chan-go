@@ -153,10 +153,16 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 	// 获取当前所有已确认分型
 	allFractals := s.fractal.Fractals()
 
-	// 增量笔识别：用所有当前元素触发笔状态机
-	// 不能只传 newElements——分型识别在 FractalProcessor 中延迟设置 FractalType，
-	// 历史元素可能在当前循环中才第一次被标记为分型
-	for _, elem := range elements {
+	// 增量笔识别：只处理最后 3 个元素 + 新元素（PRD §10.4 增量计算）。
+	// FractalProcessor.scanLast3 只会修改倒数第 3 个元素的 FractalType，
+	// 其余历史元素的 FractalType 一旦设置就不再变化。
+	// pendingFractals 的确认匹配在 stroke.Process 内部独立循环处理，
+	// 不依赖此处传入的具体元素。
+	strokeStart := 0
+	if len(elements) > 3 {
+		strokeStart = len(elements) - 3
+	}
+	for _, elem := range elements[strokeStart:] {
 		_ = s.stroke.Process(s.symbol, elem, allFractals)
 	}
 

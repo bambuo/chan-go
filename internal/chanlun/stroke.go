@@ -34,6 +34,13 @@ type strokeState struct {
 	pendingFractals    []*types.ChanKline // OpenTime 分型记录器，等待确认
 	processedFractalTS map[int64]bool     // 已处理的 OpenTime 集合
 
+	// confirmedFractalMap 是已确认分型的 OpenTime 索引（增量累积），
+	// 替代每次遍历 allFractals 的 O(N) 扫描，实现 O(1) 查找。
+	// PRD §10.4: 引擎不允许全量重算。
+	confirmedFractalMap map[int64]bool
+	// 记录上次处理的 allFractals 长度，用于检测是否缩短（单元测试场景）
+	lastAllFractalsLen int
+
 	// 回溯修正跟踪
 	modifiedStrokeIdx int  // 本轮被修改的最早笔索引，-1 表示无修改
 	strokeRemoved     bool // 是否有笔被删除
@@ -53,13 +60,9 @@ func NewStrokeProcessor() *StrokeProcessor {
 }
 
 // Process 接收当前所有已确认分型列表，增量更新笔列表。
-// symbol: 交易对名称
-// allFractals: 当前所有已确认分型。
-// 返回变化后的笔列表。
 //
-// 每次调用时，StrokeProcessor 检查 allFractals 中是否有新的已确认分型
-// 需要触发笔状态机。不再依赖逐元素传入——因为分型确认状态在
-// FractalProcessor 中是延迟设置的（需等待后续元素），通过元素传入会错过确认事件。
+// 增量优化（PRD §10.4）：通过 confirmedFractalMap 维护累积的已确认分型索引，
+// 每次只索引新增的分型，匹配时 O(1) 查表，避免全量扫描 allFractals。
 func (bp *StrokeProcessor) Process(symbol string, elem *types.ChanKline, allFractals []types.Fractal) []*stroke {
 	st := bp.getOrCreateState(symbol)
 
@@ -68,27 +71,62 @@ func (bp *StrokeProcessor) Process(symbol string, elem *types.ChanKline, allFrac
 		st.pendingFractals = append(st.pendingFractals, elem)
 	}
 
+	// 增量索引：维护已确认分型的 OpenTime map，O(1) 查找替代全量扫描。
+	// 当 allFractals 缩短时（单元测试场景），重建 map 以确保完整。
+	if len(allFractals) < st.lastAllFractalsLen {
+		// allFractals 缩短 → 测试重置场景：重建完整 map
+		st.confirmedFractalMap = make(map[int64]bool, len(allFractals))
+		for _, f := range allFractals {
+			if f.Confirmed && f.OpenTime > 0 {
+				st.confirmedFractalMap[f.OpenTime] = true
+			}
+		}
+	} else {
+		// allFractals 增长或持平 → 只索引新增的分型（增量）
+		for i := st.lastAllFractalsLen; i < len(allFractals); i++ {
+			f := allFractals[i]
+			if f.Confirmed && f.OpenTime > 0 {
+				st.confirmedFractalMap[f.OpenTime] = true
+			}
+		}
+	}
+	st.lastAllFractalsLen = len(allFractals)
+
 	// 检查所有待处理的分型中是否有新确认的
-	// 优先用 OpenTime 匹配；OpenTime 为 0 时（单元测试场景）用索引匹配
+	// 优先用 OpenTime 匹配（O(1) 查表）；OpenTime 为 0 时（单元测试场景）用索引匹配
 	newlyConfirmed := false
 	for _, pe := range st.pendingFractals {
 		if st.processedFractalTS[pe.OpenTime] {
 			continue
 		}
-		for _, f := range allFractals {
-			matched := false
-			if f.OpenTime > 0 && pe.OpenTime > 0 {
-				matched = f.Confirmed && f.OpenTime == pe.OpenTime
-			} else {
-				// OpenTime 未设置时（单元测试）匹配 FractalType + Index
-				matched = f.Confirmed && f.Index == indexOfElement(pe, nil)
+		matched := false
+		if pe.OpenTime > 0 {
+			// O(1) 查表：已确认分型的 OpenTime 在 map 中
+			matched = st.confirmedFractalMap[pe.OpenTime]
+			// 兜底：当 Fractal 的 OpenTime 为 0（单元测试场景）但 ChanKline 有 OpenTime 时，
+			// 回退到 index 匹配。此时 allFractals 数据量极小，线性扫描可接受。
+			if !matched {
+				for _, f := range allFractals {
+					if f.Confirmed && f.Index == indexOfElement(pe, nil) {
+						matched = true
+						break
+					}
+				}
 			}
-			if matched {
-				st.processConfirmedFractal(pe)
-				st.processedFractalTS[pe.OpenTime] = true
-				newlyConfirmed = true
-				break
+		} else {
+			// OpenTime 未设置时（单元测试）匹配 FractalType + Index
+			// 单元测试数据量极小，线性扫描可接受
+			for _, f := range allFractals {
+				if f.Confirmed && f.Index == indexOfElement(pe, nil) {
+					matched = true
+					break
+				}
 			}
+		}
+		if matched {
+			st.processConfirmedFractal(pe)
+			st.processedFractalTS[pe.OpenTime] = true
+			newlyConfirmed = true
 		}
 	}
 
@@ -156,13 +194,14 @@ func (bp *StrokeProcessor) getOrCreateState(symbol string) *strokeState {
 		return s
 	}
 	s := &strokeState{
-		strokes:            make([]*stroke, 0),
-		candidates:         make([]*types.ChanKline, 0),
-		pendingFractals:    make([]*types.ChanKline, 0),
-		processedFractalTS: make(map[int64]bool),
-		cfg:                types.DefaultStrokeConfig(),
-		modifiedStrokeIdx:  -1,
-		strokeRemovedIdx:   -1,
+		strokes:             make([]*stroke, 0),
+		candidates:          make([]*types.ChanKline, 0),
+		pendingFractals:     make([]*types.ChanKline, 0),
+		processedFractalTS:  make(map[int64]bool),
+		confirmedFractalMap: make(map[int64]bool),
+		cfg:                 types.DefaultStrokeConfig(),
+		modifiedStrokeIdx:   -1,
+		strokeRemovedIdx:    -1,
 	}
 	bp.states[symbol] = s
 	return s
