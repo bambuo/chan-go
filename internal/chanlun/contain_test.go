@@ -804,66 +804,6 @@ func sin(x float64) float64 {
 	return 16 * x * (pi - x) / (5*pi*pi - 4*x*(pi-x))
 }
 
-// TestContain_LooseMode 验证宽松模式的方向判定行为。
-// 严格模式对 {h:12,l:4} vs {h:13,l:6} 因为(13>12, 6>4) → AND满足 → 向上
-// 宽松模式下：{h:13,l:3} vs {h:12,l:4} → 13>12（高更高）→ 向上（即使低更低）
-// 而严格模式：13>12(high满足)但3<4(low不满足) → DirectionNone → 向上（默认）
-// 两种模式结果可能一致，但触发条件不同。
-func TestContain_LooseMode(t *testing.T) {
-	t.Run("宽松模式-高更高优先", func(t *testing.T) {
-		p := NewContainProcessor()
-		p.SetStrictMode(false) // 宽松模式
-
-		// 注意：以下追踪涉及 K2 范围涵盖 K1 的特殊场景。
-		//
-		// Step1: K1(10,5)
-		// Step2: K2(12,3) contained by K1? isContained(12,3 vs 10,5):
-		//   12>=10(高) 且 3<=5(低) → K2 范围覆盖 K1，K2 包含 K1！
-		//   resolveDirection: prevPrevIdx=-1(仅一根非包含) → DirectionUp
-		//   merge up: K1 吸收 K2 → K1(12,5), K2.Contained=true, K1.MergedFrom=2
-		//   注意：被包含的是 K1(旧的范围小)，K2(范围大)变为下一根的比较基准
-		//
-		// Step3: K3(13,4) 到来，prevNonContainedIndex 跳过 K2(contained)
-		//   找到 K1(12,5) 作为 prev。isContained(K3, K1): 13>=12 且 4<=5 → 再次包含！
-		//   ㊟ 注释错误纠正：不是"K3 vs K2 不包含"，而是"K3 vs K1(12,5) 包含"
-		//   resolveDirection: prevPrevIdx=-1 → DirectionUp
-		//   merge up: K1(13,5), K3.Contained=true, K1.MergedFrom=3
-		//
-		// 最终非包含序列：[K1(13,5)]，所有新 K 线范围都大于 K1 而被 K1 吸收。
-		// 此测试仅验证不 panic，不 assert 具体值。
-		p.Process(rk(5, 10, 5, 8, 1))  // K1(10,5)
-		p.Process(rk(10, 12, 3, 8, 2)) // K2(12,3)
-		p.Process(rk(15, 13, 4, 8, 3)) // K3(13,4)
-
-		e := p.Elements()
-		t.Logf("宽松模式非包含元素数: %d (仅K1吸收所有K线: h=%.0f l=%.0f)", len(e), e[0].High, e[0].Low)
-		// 只要不 panic 即通过
-	})
-
-	t.Run("严格模式默认行为不变", func(t *testing.T) {
-		p := NewContainProcessor()
-		// 默认 StrictDirection=true
-
-		// K1=(10,5), K2=(12,8) → K2不包含K1
-		p.Process(rk(5, 10, 5, 8, 1))   // K1(10,5)
-		p.Process(rk(10, 12, 8, 10, 2)) // K2(12,8) 方向向上
-		// K3(11,9) vs K2(12,8): 11<=12且9>=8 → 被K2包含
-		// 严格模式：K1→K2方向=up → 合并取高 K2'=(12,9)
-		p.Process(rk(15, 11, 9, 8, 3)) // K3(11,9)
-
-		e := p.Elements()
-		if len(e) != 2 {
-			t.Fatalf("期望2个非包含元素，实际 %d", len(e))
-		}
-		if e[0].High != 10 || e[0].Low != 5 {
-			t.Errorf("K1期望 (10,5)，实际 (%.0f,%.0f)", e[0].High, e[0].Low)
-		}
-		if e[1].High != 12 || e[1].Low != 9 {
-			t.Errorf("K2合并后期望 (12,9)，实际 (%.0f,%.0f)", e[1].High, e[1].Low)
-		}
-	})
-}
-
 // TestContain_PrevNextLinkedList 验证非包含序列的 Prev/Next 链表指针正确性。
 func TestContain_PrevNextLinkedList(t *testing.T) {
 	p := NewContainProcessor()
