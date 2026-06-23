@@ -15,8 +15,10 @@ import (
 //  1. 新K线加入时，与当前非包含序列的最后一个元素比较。
 //  2. 检查包含关系，如果不包含则直接作为新元素加入非包含序列。
 //  3. 如果被包含，则从最近两根非包含元素确定方向：
-//     - 向上：第二根高点>第一根高点 且 第二根低点>第一根低点
-//     - 向下：第二根高点<第一根高点 且 第二根低点<第一根低点
+//     - 严格模式（默认，符合缠论原文）：第二根高点>第一根高点 且 第二根低点>第一根低点
+//     或 第二根高点<第一根高点 且 第二根低点<第一根低点
+//     - 宽松模式（算法文档版本）：第二根高点>第一根高点（单向），
+//     或 第二根低点<第一根低点（单向），高条件优先
 //     - 方向不明或仅有一根非包含元素：按向上处理（缠论规定）
 //  4. 按方向合并：向上取较高高点和较高低点，向下取较低高点和较低低点。
 //  5. 合并后修改前一元素的 High/Low，新元素标记为已包含。
@@ -33,13 +35,25 @@ type ContainProcessor struct {
 	lastMergeTarget     *types.ChanKline
 	lastMergeTargetHigh float64
 	lastMergeTargetLow  float64
+
+	// StrictDirection 控制方向判定的模式：
+	//   true（默认）= 严格模式（缠论原文）：要求 High 和 Low 同时同向（AND）
+	//   false = 宽松模式（算法文档版本）：仅要求 High 或 Low 单向满足（OR，高优先）
+	StrictDirection bool
 }
 
-// NewContainProcessor 创建新的包含处理器。
+// NewContainProcessor 创建新的包含处理器（默认严格模式）。
 func NewContainProcessor() *ContainProcessor {
 	return &ContainProcessor{
-		elements: make([]*types.ChanKline, 0),
+		elements:        make([]*types.ChanKline, 0),
+		StrictDirection: true,
 	}
+}
+
+// SetStrictMode 设置方向判定模式。
+// true=严格（缠论原文AND），false=宽松（算法文档OR）。
+func (p *ContainProcessor) SetStrictMode(strict bool) {
+	p.StrictDirection = strict
 }
 
 // Process 处理一根原始K线并将其纳入非包含序列。
@@ -238,13 +252,33 @@ func (p *ContainProcessor) prevNonContainedIndex(i int) int {
 	return -1
 }
 
-// determineDirection 计算两个非包含元素之间的方向。
+// determineDirection 根据模式计算两个非包含元素之间的方向。
+//
+// 严格模式（StrictDirection=true，缠论原文）：
+//   - 向上：High 更高 且 Low 更高（AND）
+//   - 向下：High 更低 且 Low 更低（AND）
+//
+// 宽松模式（StrictDirection=false，算法文档）：
+//   - 向上：High 更高（单向，优先）
+//   - 向下：Low 更低（单向）
+//   - High 更高且 Low 更低（范围扩大）：判为向上（高优先）
 func (p *ContainProcessor) determineDirection(a, b *types.ChanKline) types.ChanDirection {
-	if a.High < b.High && a.Low < b.Low {
-		return types.DirectionUp
-	}
-	if a.High > b.High && a.Low > b.Low {
-		return types.DirectionDown
+	if p.StrictDirection {
+		// 严格模式（缠论原文）：要求 High 和 Low 同时同向
+		if a.High < b.High && a.Low < b.Low {
+			return types.DirectionUp
+		}
+		if a.High > b.High && a.Low > b.Low {
+			return types.DirectionDown
+		}
+	} else {
+		// 宽松模式（算法文档版本）：单向判定，高优先
+		if a.High < b.High {
+			return types.DirectionUp
+		}
+		if a.Low > b.Low {
+			return types.DirectionDown
+		}
 	}
 	return types.DirectionNone
 }
