@@ -582,3 +582,290 @@ func TestCheckPeakEndPoint_Down(t *testing.T) {
 		t.Error("笔内有更低价的下降笔应不通过")
 	}
 }
+
+// ====== strokeState.Reset 直接测试 ======
+
+func TestStrokeStateReset(t *testing.T) {
+	state := &strokeState{
+		strokes: []*stroke{
+			{Index: 0, Direction: types.DirectionUp, Confirmed: true},
+			{Index: 1, Direction: types.DirectionDown, Confirmed: true},
+		},
+		lastEndpoint: mkElem(10, 5, types.FractalBottom, 0),
+		candidates: []*types.ChanKline{
+			mkElem(20, 15, types.FractalTop, 1),
+		},
+	}
+
+	state.Reset()
+
+	if len(state.strokes) != 0 {
+		t.Errorf("Reset 后期望空 strokes, 实际 %d", len(state.strokes))
+	}
+	if state.lastEndpoint != nil {
+		t.Error("Reset 后期望 lastEndpoint 为 nil")
+	}
+	if len(state.candidates) != 0 {
+		t.Errorf("Reset 后期望空 candidates, 实际 %d", len(state.candidates))
+	}
+}
+
+// ====== trySubPeakCorrection 直接测试 ======
+
+// TestTrySubPeakCorrection_UpStroke 验证向上笔的次峰值修正路径。
+func TestTrySubPeakCorrection_UpStroke(t *testing.T) {
+	// 构造一个场景：两条笔(下+上)，然后一个更高的顶分型到来。
+	// 预期：tryUpdateEndpoint 更新上笔终点 → trySubPeakCorrection 尝试修正前一笔
+
+	elemStart0 := mkElem(30, 25, types.FractalTop, 0) // 顶部
+	elemMid0 := mkElem(25, 18, types.FractalNone, 1)
+	elemEnd0 := mkElem(18, 12, types.FractalBottom, 2) // 底部
+
+	elemStart1 := mkElem(18, 12, types.FractalBottom, 3)
+	elemMid1 := mkElem(22, 15, types.FractalNone, 4)
+	elemEnd1 := mkElem(28, 20, types.FractalTop, 5) // 顶部
+
+	elemNew := mkElem(35, 24, types.FractalTop, 6) // 更高的新顶
+
+	// 连接元素链
+	linkChain([]*types.ChanKline{
+		elemStart0, elemMid0, elemEnd0,
+		elemStart1, elemMid1, elemEnd1,
+		elemNew,
+	})
+
+	// 创建两条笔: down0 (25→12) + up1 (12→28)
+	downStroke := &stroke{
+		Index:      0,
+		Direction:  types.DirectionDown,
+		Start:      elemStart0,
+		End:        elemEnd0,
+		StartPrice: elemStart0.High,
+		EndPrice:   elemEnd0.Low,
+		High:       30,
+		Low:        12,
+		Confirmed:  true,
+	}
+
+	upStroke := &stroke{
+		Index:      1,
+		Direction:  types.DirectionUp,
+		Start:      elemEnd0,
+		End:        elemEnd1,
+		StartPrice: elemEnd0.Low,
+		EndPrice:   elemEnd1.High,
+		High:       28,
+		Low:        12,
+		Confirmed:  true,
+	}
+
+	state := &strokeState{
+		strokes:            []*stroke{downStroke, upStroke},
+		lastEndpoint:       elemEnd1,
+		candidates:         make([]*types.ChanKline, 0),
+		processedFractalTS: make(map[int64]bool),
+		cfg:                types.DefaultStrokeConfig(),
+	}
+	state.cfg.AllowSubPeak = false // 确保不走捷径
+
+	// 模拟 tryUpdateEndpoint 成功后的流程:
+	// elemNew(顶分型) 与 lastEndpoint(顶分型) 类型相同 → 尝试更新
+	updated := state.tryUpdateEndpoint(elemNew, upStroke)
+	if !updated {
+		t.Fatal("tryUpdateEndpoint 应成功（更高顶）")
+	}
+
+	if upStroke.End != elemNew {
+		t.Error("终点应更新为 elemNew")
+	}
+	if upStroke.EndPrice != elemNew.High {
+		t.Errorf("EndPrice 期望 %.0f, 实际 %.0f", elemNew.High, upStroke.EndPrice)
+	}
+
+	// 现在调用 trySubPeakCorrection
+	// 条件分析:
+	//   1. AllowSubPeak=false ✓
+	//   2. len(strokes)=2 ≥ 2 ✓
+	//   3. lastStroke=up(DirectionUp), elem=FractalTop → 不过滤
+	//   4. lastStroke.Direction=up → elem.High(35) <= prev.Start.High(30)? 35<=30? No → 不过滤
+	//   5. lastStroke.Direction=up → lastStroke.End.Low(24) <= prev.Start.Low(25)? 24<=25? Yes → 应过滤!
+	//
+	// 条件5过滤: lastStroke.End.Low(24) <= prevStroke.Start.Low(25) → return
+	// 因为 upStroke 的终点低点(24) 跌破了 downStroke 起点(顶部)的低点(25)
+
+	state.trySubPeakCorrection(elemNew)
+
+	// 因为条件5过滤，笔不应该被修改
+	if len(state.strokes) != 2 {
+		t.Errorf("条件5过滤: 期望仍有 2 条笔, 实际 %d", len(state.strokes))
+	}
+
+	// 创建一个条件5通过的新场景：让 upStroke.End.Low > prev.Start.Low
+	elemNew2 := mkElem(33, 26, types.FractalTop, 7) // high=33, low=26
+
+	// 重建 upStroke 使其终点低点更高
+	upStroke2 := &stroke{
+		Index:      1,
+		Direction:  types.DirectionUp,
+		Start:      elemEnd0,
+		End:        elemNew2,
+		StartPrice: elemEnd0.Low,
+		EndPrice:   elemNew2.High,
+		High:       33,
+		Low:        12,
+		Confirmed:  true,
+	}
+
+	// prev.Start = elemStart0(顶部), Start.Low = 25
+	// elemNew2.low = 26 > 25 → 条件5不满足 → 不过滤 ✓
+
+	state2 := &strokeState{
+		strokes:            []*stroke{downStroke, upStroke2},
+		lastEndpoint:       elemNew2,
+		candidates:         make([]*types.ChanKline, 0),
+		processedFractalTS: make(map[int64]bool),
+		cfg:                types.DefaultStrokeConfig(),
+	}
+	state2.cfg.AllowSubPeak = false
+
+	// 调用 trySubPeakCorrection
+	// 这会尝试移除 upStroke2,然后更新 downStroke 的终点为 elemNew2
+	// 但 downStroke 是 DirectionDown, elemNew2 是 FractalTop,类型不匹配 → 更新失败 → 恢复
+	state2.trySubPeakCorrection(elemNew2)
+
+	// 应恢复（因为 downStroke 方向是 down, 需要 bottom 类型才能更新）
+	if len(state2.strokes) != 2 {
+		t.Errorf("修正失败后期望恢复为 2 条笔, 实际 %d", len(state2.strokes))
+	}
+}
+
+// TestTrySubPeakCorrection_DownStroke 验证下降笔的次峰值修正路径。
+func TestTrySubPeakCorrection_DownStroke(t *testing.T) {
+	// 构造：两条笔(上+下)，然后一个更低的底到来
+	// 预期：更新下笔终点 → 尝试修正前一笔
+
+	elemStart0 := mkElem(10, 5, types.FractalBottom, 0) // 底部 (up stroke start)
+	elemMid0 := mkElem(15, 8, types.FractalNone, 1)
+	elemEnd0 := mkElem(22, 16, types.FractalTop, 2) // 顶部 (up stroke end)
+
+	elemStart1 := mkElem(22, 16, types.FractalTop, 3) // 顶部 (down stroke start)
+	elemMid1 := mkElem(18, 12, types.FractalNone, 4)
+	elemEnd1 := mkElem(14, 8, types.FractalBottom, 5) // 底部 (down stroke end)
+
+	elemNew := mkElem(12, 4, types.FractalBottom, 6) // 更低的底
+
+	linkChain([]*types.ChanKline{
+		elemStart0, elemMid0, elemEnd0,
+		elemStart1, elemMid1, elemEnd1,
+		elemNew,
+	})
+
+	upStroke := &stroke{
+		Index:      0,
+		Direction:  types.DirectionUp,
+		Start:      elemStart0,
+		End:        elemEnd0,
+		StartPrice: elemStart0.Low,
+		EndPrice:   elemEnd0.High,
+		High:       22,
+		Low:        5,
+		Confirmed:  true,
+	}
+
+	downStroke := &stroke{
+		Index:      1,
+		Direction:  types.DirectionDown,
+		Start:      elemEnd0,
+		End:        elemEnd1,
+		StartPrice: elemEnd0.High,
+		EndPrice:   elemEnd1.Low,
+		High:       22,
+		Low:        8,
+		Confirmed:  true,
+	}
+
+	state := &strokeState{
+		strokes:            []*stroke{upStroke, downStroke},
+		lastEndpoint:       elemEnd1,
+		candidates:         make([]*types.ChanKline, 0),
+		processedFractalTS: make(map[int64]bool),
+		cfg:                types.DefaultStrokeConfig(),
+	}
+	state.cfg.AllowSubPeak = false
+
+	// elemNew 类型与 lastEndpoint 同(都是 bottom) → tryUpdateEndpoint
+	updated := state.tryUpdateEndpoint(elemNew, downStroke)
+	if !updated {
+		t.Fatal("tryUpdateEndpoint 应成功（更低的底）")
+	}
+
+	// trySubPeakCorrection 会被调用
+	// 条件5 (down): lastStroke.End.High >= prevStroke.Start.High?
+	//   lastStroke.End 是 elemNew(底), End.High = elemNew.High = 12
+	//   prevStroke.Start = elemStart0(底), Start.High = elemStart0.High = 10
+	//   12 >= 10? Yes → 条件5过滤 → return
+
+	state.trySubPeakCorrection(elemNew)
+
+	if len(state.strokes) != 2 {
+		t.Errorf("条件5过滤: 期望仍有 2 条笔, 实际 %d", len(state.strokes))
+	}
+
+	// 让条件5不通过: 让 elemNew 的 High < prev.Start.High
+	elemNew2 := mkElem(9, 4, types.FractalBottom, 7) // 底, high=9, low=4
+
+	downStroke2 := &stroke{
+		Index:      1,
+		Direction:  types.DirectionDown,
+		Start:      elemEnd0,
+		End:        elemNew2,
+		StartPrice: elemEnd0.High,
+		EndPrice:   elemNew2.Low,
+		High:       22,
+		Low:        4,
+		Confirmed:  true,
+	}
+
+	state2 := &strokeState{
+		strokes:            []*stroke{upStroke, downStroke2},
+		lastEndpoint:       elemNew2,
+		candidates:         make([]*types.ChanKline, 0),
+		processedFractalTS: make(map[int64]bool),
+		cfg:                types.DefaultStrokeConfig(),
+	}
+	state2.cfg.AllowSubPeak = false
+
+	// 这次条件5不通过: elemNew2.High(9) < prev.Start.High(10) → 不过滤
+	// 后续: 移除 downStroke2, 尝试用 elemNew2 更新 upStroke(方向 up)
+	// upStroke.Direction=up, elemNew2.FractalType=bottom → 更新失败(类型不匹配)
+	state2.trySubPeakCorrection(elemNew2)
+
+	// 应恢复
+	if len(state2.strokes) != 2 {
+		t.Errorf("修正失败后期望恢复为 2 条笔, 实际 %d", len(state2.strokes))
+	}
+}
+
+// TestTrySubPeakCorrection_AllowSubPeak 验证 AllowSubPeak=true 时直接返回。
+func TestTrySubPeakCorrection_AllowSubPeak(t *testing.T) {
+	state := &strokeState{
+		strokes: []*stroke{{Index: 0, Confirmed: true}},
+		cfg:     types.DefaultStrokeConfig(),
+	}
+	state.cfg.AllowSubPeak = true
+
+	// 不应 panic
+	state.trySubPeakCorrection(nil)
+}
+
+// TestTrySubPeakCorrection_NotEnoughStrokes 验证笔数不足时直接返回。
+func TestTrySubPeakCorrection_NotEnoughStrokes(t *testing.T) {
+	state := &strokeState{
+		strokes: []*stroke{},
+		cfg:     types.DefaultStrokeConfig(),
+	}
+	state.cfg.AllowSubPeak = false
+
+	// strokes 为空，直接返回，不 panic
+	state.trySubPeakCorrection(mkElem(10, 5, types.FractalTop, 0))
+}

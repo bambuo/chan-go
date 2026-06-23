@@ -87,6 +87,26 @@ func TestWriter_WriteAllNoChange(t *testing.T) {
 	}
 }
 
+// TestBaseDir 验证 BaseDir 返回正确的目录路径。
+func TestBaseDir(t *testing.T) {
+	dir := "/tmp/test-debug-output"
+	w := strucdump.NewWriter(dir)
+
+	if got := w.BaseDir(); got != dir {
+		t.Errorf("BaseDir() 期望 %s, 实际 %s", dir, got)
+	}
+}
+
+// TestWriteAll_EmptyList 验证空的 output 列表不报错。
+func TestWriteAll_EmptyList(t *testing.T) {
+	dir := t.TempDir()
+	w := strucdump.NewWriter(dir)
+
+	if err := w.WriteAll([]*chanlun.PipelineOutput{}); err != nil {
+		t.Fatalf("空列表 WriteAll 不应失败: %v", err)
+	}
+}
+
 // produceOutput 用真实 Pipeline 处理一批 K 线后提取当前状态。
 func produceOutput(t *testing.T, symbol string) *chanlun.PipelineOutput {
 	t.Helper()
