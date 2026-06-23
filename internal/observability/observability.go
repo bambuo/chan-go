@@ -4,6 +4,10 @@
 //   - metrics（延迟、信号质量、漂移、业务计数）
 //   - audit log（K 线拒绝、信号生命周期）
 //   - 告警（假信号率突增、recast 率突增、K 线断流）
+//
+// Metrics 使用包级单例 DefaultMetrics，模块可跨包直接调用：
+//
+//	observability.M.RecordSignalCreated(symbol, sigType, level)
 package observability
 
 import (
@@ -16,6 +20,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// M 是包级 metrics 实例，供全系统调用。
+var M = NewMetricsCollector()
 
 // MetricsCollector metrics 采集器。
 type MetricsCollector struct {

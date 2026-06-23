@@ -184,6 +184,10 @@ func trendPatternToTypes(zs *trendPattern) types.TrendPattern {
 		Direction: zs.Direction,
 		Type:      zs.Type,
 		Completed: zs.Completed,
+		StartPrice: zs.StartPrice,
+		EndPrice:   zs.EndPrice,
+		High:       zs.High,
+		Low:        zs.Low,
 	}
 }
 

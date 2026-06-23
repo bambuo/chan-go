@@ -53,22 +53,30 @@ func (bcp *DivergenceProcessor) Process(symbol string, strokes []*stroke) []*div
 
 	st.strokes = strokes
 
-	// 需要至少 4 笔才能比较两对同向笔
-	for st.processedStroke+3 < len(strokes) {
+	// 比较相邻的同向笔（隔一根反向笔，如第 0 笔与第 2 笔）。
+	// 在严格交替的笔序列 [up, down, up, down, ...] 中：
+	//   idx=2: strokes[0] vs strokes[2]  (同为 up)
+	//   idx=3: strokes[1] vs strokes[3]  (同为 down)
+	//   idx=4: strokes[2] vs strokes[4]  (同为 up)
+	//   ...
+	//
+	// 背驰条件：价格创新高/低的同时，强度（MACD 面积替代）未能同步。
+	for st.processedStroke+2 < len(strokes) {
 		st.processedStroke++
 		idx := st.processedStroke
-		if idx < 3 {
+		if idx < 2 {
 			continue
 		}
 
-		// 获取最近两根同向笔（隔一根反向笔）
-		s1 := strokes[idx-3]
+		// 获取相邻的两根同向笔（隔一根反向笔）
+		s1 := strokes[idx-2]
 		s2 := strokes[idx]
 
 		if s1.Direction != s2.Direction {
 			continue
 		}
 
+		// 检查价格是否创新高（顶背驰）或新低（底背驰）
 		var priceHigher bool
 		if s2.Direction == types.DirectionUp {
 			priceHigher = s2.EndPrice > s1.EndPrice
@@ -92,7 +100,7 @@ func (bcp *DivergenceProcessor) Process(symbol string, strokes []*stroke) []*div
 
 		bc := &divergence{
 			Type:       bcType,
-			Stroke1Idx: idx - 3,
+			Stroke1Idx: idx - 2,
 			Stroke2Idx: idx,
 			Price1:     s1.EndPrice,
 			Price2:     s2.EndPrice,

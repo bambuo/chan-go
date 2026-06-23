@@ -1,17 +1,20 @@
 // Package m8_gateway 输出网关（M8）。
 //
 // 职责（PRD §11）：
-//   - REST 查询（当前信号快照、历史信号、结构树）
-//   - WS 推送（实时信号、结构变更、级别 recast）
-//   - 鉴权（API Key + HMAC）
-//   - 限流
-//   - 订阅管理
+//   - 主输出通道 — Redis Stream XADD（实时信号、共振、状态变更）
+//   - 辅助查询 — REST API（当前信号快照、结构树、级别）
+//
+// 架构要点：
+//   - 输入用 XREADGROUP 消费 K 线 → 输出用 XADD 发布信号，对称设计
+//   - REST 只做快照查询（不参与实时推送），实时推送走 Redis Stream
+//   - 每次信号变更写入一条 JSON 到 "<OutputStreamPrefix>:<symbol>" stream
 //
 // M8 是引擎的唯一出口。
 package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,8 +25,10 @@ import (
 	"trade/internal/log"
 	"trade/internal/signal"
 	"trade/internal/structure"
+	"trade/internal/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
 // Gateway M8 输出网关。
@@ -35,19 +40,19 @@ type Gateway struct {
 	signalEngine  *signal.SignalEngine
 	structureTree *structure.Tree
 
+	rdb    *redis.Client
+	rdbCtx context.Context
+
 	router *gin.Engine
 	server *http.Server
 
-	wsClients map[string][]*wsClient // symbol → WS 客户端列表
-}
-
-type wsClient struct {
-	channels []string
-	done     chan struct{}
-	since    string // 断线重连时的游标
+	subIDs []int64 // 事件订阅 ID
 }
 
 // New 创建输出网关。
+//
+// 订阅总线事件并将信号/共振写入 Redis Stream（XADD）。
+// 同时提供 REST 接口供外部查询当前状态快照。
 func New(cfg config.Config, bus *eventbus.GenericBus, signalEngine *signal.SignalEngine, structureTree *structure.Tree) *Gateway {
 	g := &Gateway{
 		cfg:           cfg,
@@ -55,8 +60,22 @@ func New(cfg config.Config, bus *eventbus.GenericBus, signalEngine *signal.Signa
 		logger:        log.Component("m8.gateway"),
 		signalEngine:  signalEngine,
 		structureTree: structureTree,
-		wsClients:     make(map[string][]*wsClient),
+		rdbCtx:        context.Background(),
 	}
+
+	// 初始化 Redis 客户端（与 M1 输入网关共享同一 Redis）
+	g.rdb = redis.NewClient(&redis.Options{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPassword,
+		DB:       cfg.RedisDB,
+	})
+
+	// 订阅事件 → 写入 Redis Stream
+	g.subIDs = append(g.subIDs,
+		bus.Subscribe(types.EventSignalCreated, g.onSignalCreated),
+		bus.Subscribe(types.EventSignalStateChanged, g.onSignalStateChanged),
+		bus.Subscribe(types.EventResonanceTriggered, g.onResonanceTriggered),
+	)
 
 	g.setupRouter()
 	return g
@@ -72,47 +91,112 @@ func (g *Gateway) Start() error {
 		WriteTimeout: 30 * time.Second,
 	}
 
-	g.logger.Info("启动输出网关", "addr", addr)
+	g.logger.Info("启动输出网关",
+		"addr", addr,
+		"outputStreamPrefix", g.cfg.OutputStreamPrefix,
+	)
 	return g.server.ListenAndServe()
 }
 
 // Stop 优雅关闭。
 func (g *Gateway) Stop(ctx context.Context) error {
 	g.logger.Info("关闭输出网关")
+
+	for _, id := range g.subIDs {
+		g.bus.Unsubscribe(types.EventSignalCreated, id)
+		g.bus.Unsubscribe(types.EventSignalStateChanged, id)
+		g.bus.Unsubscribe(types.EventResonanceTriggered, id)
+	}
+
+	if g.rdb != nil {
+		g.rdb.Close()
+	}
+
 	return g.server.Shutdown(ctx)
 }
 
-// setupRouter 配置 gin 路由（PRD §11.1）。
+// ========================================================================
+// 事件处理 → Redis Stream XADD
+// ========================================================================
+
+func (g *Gateway) streamKey(symbol string) string {
+	return fmt.Sprintf("%s:%s", g.cfg.OutputStreamPrefix, symbol)
+}
+
+func (g *Gateway) xaddToStream(symbol string, eventType string, data interface{}) {
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		g.logger.Error("序列化输出事件失败", "eventType", eventType, "error", err)
+		return
+	}
+
+	if err := g.rdb.XAdd(g.rdbCtx, &redis.XAddArgs{
+		Stream: g.streamKey(symbol),
+		Values: map[string]interface{}{
+			"type": eventType,
+			"ts":   fmt.Sprintf("%d", time.Now().UnixMilli()),
+			"data": string(jsonBytes),
+		},
+	}).Err(); err != nil {
+		g.logger.Error("XADD 输出失败",
+			"stream", g.streamKey(symbol),
+			"eventType", eventType,
+			"error", err,
+		)
+		return
+	}
+
+	g.logger.Debug("输出事件已写入 Redis Stream",
+		"stream", g.streamKey(symbol),
+		"eventType", eventType,
+	)
+}
+
+func (g *Gateway) onSignalCreated(evt types.Event) {
+	payload, ok := evt.Payload.(types.SignalEventPayload)
+	if !ok || payload.Signal == nil {
+		return
+	}
+	g.xaddToStream(evt.Symbol, "signal.created", payload.Signal)
+}
+
+func (g *Gateway) onSignalStateChanged(evt types.Event) {
+	payload, ok := evt.Payload.(types.SignalEventPayload)
+	if !ok || payload.Signal == nil {
+		return
+	}
+	g.xaddToStream(evt.Symbol, "signal.stateChanged", payload.Signal)
+}
+
+func (g *Gateway) onResonanceTriggered(evt types.Event) {
+	payload, ok := evt.Payload.(types.ResonanceEventPayload)
+	if !ok || payload.Signal == nil {
+		return
+	}
+	g.xaddToStream(evt.Symbol, "resonance.triggered", map[string]interface{}{
+		"signal":    payload.Signal,
+		"resonance": payload.Resonance,
+	})
+}
+
+// ========================================================================
+// REST API（快照查询）
+// ========================================================================
+
 func (g *Gateway) setupRouter() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(g.requestLogger())
 
-	// 健康检查
 	r.GET("/v1/health", g.handleHealth)
-
-	// 信号 API
-	signals := r.Group("/v1/signals")
-	{
-		signals.GET("/:symbol/current", g.handleCurrentSignals)
-		signals.GET("/:symbol", g.handleSignalsHistory)
-		signals.GET("/:symbol/:signalId", g.handleSignalDetail)
-	}
-
-	// 结构 API
-	structure := r.Group("/v1/structure")
-	{
-		structure.GET("/:symbol", g.handleStructureCurrent)
-		structure.GET("/:symbol/history", g.handleStructureHistory)
-	}
-
-	// 级别 API
+	r.GET("/v1/signals/:symbol/current", g.handleCurrentSignals)
+	r.GET("/v1/signals/:symbol/:signalId", g.handleSignalDetail)
+	r.GET("/v1/structure/:symbol", g.handleStructureCurrent)
 	r.GET("/v1/levels/:symbol", g.handleLevels)
 
 	g.router = r
 }
 
-// requestLogger 请求日志中间件。
 func (g *Gateway) requestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -126,8 +210,6 @@ func (g *Gateway) requestLogger() gin.HandlerFunc {
 		)
 	}
 }
-
-// === REST 处理器（骨架，待填充）===
 
 func (g *Gateway) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -145,31 +227,54 @@ func (g *Gateway) handleCurrentSignals(c *gin.Context) {
 	})
 }
 
-func (g *Gateway) handleSignalsHistory(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "not implemented yet"})
-}
-
 func (g *Gateway) handleSignalDetail(c *gin.Context) {
 	signalID := c.Param("signalId")
-	signal := g.signalEngine.GetSignal(signalID)
-	if signal == nil {
+	sig := g.signalEngine.GetSignal(signalID)
+	if sig == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "signal not found"})
 		return
 	}
-	c.JSON(http.StatusOK, signal)
+	c.JSON(http.StatusOK, sig)
 }
 
 func (g *Gateway) handleStructureCurrent(c *gin.Context) {
 	symbol := c.Param("symbol")
-	_ = symbol
-	// TODO: 从 M3 获取当前结构
-	c.JSON(http.StatusOK, gin.H{"message": "not implemented yet"})
-}
+	result := make(map[string]*types.DualTrackState)
 
-func (g *Gateway) handleStructureHistory(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "not implemented yet"})
+	for _, level := range []types.Level{types.LevelL1, types.LevelL2, types.LevelL3, types.LevelL4} {
+		state := g.structureTree.GetCurrentState(symbol, level)
+		if state != nil {
+			result[level.String()] = state
+		}
+	}
+
+	if len(result) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no structure data for symbol"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"symbol": symbol, "levels": result})
 }
 
 func (g *Gateway) handleLevels(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "not implemented yet"})
+	symbol := c.Param("symbol")
+	result := make(map[string]interface{})
+
+	for _, level := range []types.Level{types.LevelL1, types.LevelL2, types.LevelL3, types.LevelL4} {
+		state := g.structureTree.GetCurrentState(symbol, level)
+		if state == nil {
+			continue
+		}
+		result[level.String()] = map[string]interface{}{
+			"strokes":       len(state.Confirmed.Strokes),
+			"pivotZones":    len(state.Confirmed.PivotZones),
+			"trendPatterns": len(state.Confirmed.TrendPatterns),
+			"inSync":        state.InSync,
+		}
+	}
+
+	if len(result) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no level data for symbol"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"symbol": symbol, "levels": result})
 }

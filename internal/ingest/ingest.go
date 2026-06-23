@@ -21,6 +21,7 @@ import (
 
 	"trade/internal/eventbus"
 	"trade/internal/log"
+	"trade/internal/observability"
 	"trade/internal/types"
 
 	"github.com/redis/go-redis/v9"
@@ -323,6 +324,7 @@ func (g *IngestGateway) processMessage(symbol string, msg redis.XMessage) {
 	if lastTS > 0 && kline.OpenTime-lastTS > 60000 {
 		gap := kline.OpenTime - lastTS
 		g.logger.Warn("K 线缺口", "symbol", symbol, "gapMs", gap, "lastTS", lastTS, "currentTS", kline.OpenTime)
+			observability.M.RecordKlineGap(symbol)
 		g.bus.Publish(types.Event{
 			Type:   types.EventKlineGap,
 			Symbol: symbol,
@@ -354,6 +356,7 @@ func (g *IngestGateway) processMessage(symbol string, msg redis.XMessage) {
 
 // publishRejected 发布 K 线被拒绝事件（PRD §14.5.1）。
 func (g *IngestGateway) publishRejected(symbol string, kline *types.Kline, reason string) {
+	observability.M.RecordKlineRejected(symbol, reason)
 	g.bus.Publish(types.Event{
 		Type:   types.EventKlineRejected,
 		Symbol: symbol,

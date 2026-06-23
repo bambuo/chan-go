@@ -77,6 +77,10 @@ type TrendPattern struct {
 	Level        Level         `json:"level"`
 	Completed    bool          `json:"completed"`           // 是否已结束
 	EndReason    string        `json:"endReason,omitempty"` // "divergence" / "reverseBreak"
+	StartPrice   float64      `json:"startPrice,omitempty"` // 走势起始价格
+	EndPrice     float64      `json:"endPrice,omitempty"`   // 走势结束价格
+	High         float64      `json:"high,omitempty"`       // 区间最高
+	Low          float64      `json:"low,omitempty"`        // 区间最低
 }
 
 // LevelStructure 单个级别的结构快照。

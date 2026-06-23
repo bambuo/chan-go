@@ -15,19 +15,18 @@ import (
 )
 
 const (
-	defaultLogLevel       = "info"
-	defaultLogJSON        = true
-	defaultDBPath         = "data/klines.db"
-	defaultSymbols        = "BTCUSDT,ETHUSDT"
-	defaultInterval       = "1m"
-	defaultRedisAddr      = "localhost:6379"
-	defaultHTTPAddr       = "0.0.0.0"
-	defaultHTTPPort       = 8080
-	defaultSnapshotDir    = "data/snapshots"
-	defaultSnapshotPeriod = 300
-	defaultRetainSnapshot = 24
-	defaultRateLimit      = 50
-	defaultWSChannelMax   = 20
+	defaultLogLevel           = "info"
+	defaultLogJSON            = true
+	defaultSymbols            = "BTCUSDT,ETHUSDT"
+	defaultRedisAddr          = "localhost:6379"
+	defaultHTTPAddr           = "0.0.0.0"
+	defaultHTTPPort           = 8080
+	defaultSnapshotDir        = "data/snapshots"
+	defaultSnapshotPeriod     = 300
+	defaultRetainSnapshot     = 24
+	defaultStreamPrefix       = "chan:klines"
+	defaultConsumerGroup      = "chan-engine"
+	defaultOutputStreamPrefix = "chan:signals"
 )
 
 // Execute runs the root command.
@@ -72,8 +71,6 @@ func newRootCmd() *cobra.Command {
 	// === 数据源 ===
 	flags.String("symbols", envDefault("CL_SYMBOLS", defaultSymbols),
 		"交易对列表，逗号分隔（大写，如 BTCUSDT,ETHUSDT）")
-	flags.String("interval", envDefault("CL_INTERVAL", defaultInterval),
-		"K线时间周期")
 
 	// === Redis（M1 输入网关）===
 	flags.String("redis-addr", envDefault("CL_REDIS_ADDR", defaultRedisAddr),
@@ -82,16 +79,18 @@ func newRootCmd() *cobra.Command {
 		"Redis 密码")
 	flags.Int("redis-db", envDefaultInt("CL_REDIS_DB", 0),
 		"Redis DB 编号")
+	flags.String("stream-prefix", envDefault("CL_STREAM_PREFIX", defaultStreamPrefix),
+		"K线输入 Stream 前缀")
+	flags.String("consumer-group", envDefault("CL_CONSUMER_GROUP", defaultConsumerGroup),
+		"消费组名称")
 
 	// === HTTP（M8 输出网关）===
 	flags.String("http-addr", envDefault("CL_HTTP_ADDR", defaultHTTPAddr),
 		"HTTP 监听地址")
 	flags.Int("http-port", envDefaultInt("CL_HTTP_PORT", defaultHTTPPort),
 		"HTTP 端口")
-	flags.Int("rate-limit", envDefaultInt("CL_RATE_LIMIT", defaultRateLimit),
-		"REST 每秒请求上限")
-	flags.Int("ws-channel-max", envDefaultInt("CL_WS_CHANNEL_MAX", defaultWSChannelMax),
-		"WS 每连接最大 channel 数")
+	flags.String("output-stream-prefix", envDefault("CL_OUTPUT_STREAM_PREFIX", defaultOutputStreamPrefix),
+		"Redis Stream 输出前缀")
 
 	// === 快照（M0）===
 	flags.String("snapshot-dir", envDefault("CL_SNAPSHOT_DIR", defaultSnapshotDir),
@@ -100,10 +99,6 @@ func newRootCmd() *cobra.Command {
 		"快照周期（秒）")
 	flags.Int("snapshot-retain", envDefaultInt("CL_SNAPSHOT_RETAIN", defaultRetainSnapshot),
 		"保留最近快照数")
-
-	// === 数据库 ===
-	flags.String("db", envDefault("CL_DB_PATH", defaultDBPath),
-		"SQLite 数据库路径")
 
 	return cmd
 }
@@ -120,22 +115,20 @@ func parseConfig() config.Config {
 			cfg.Symbols = append(cfg.Symbols, strings.ToUpper(s))
 		}
 	}
-	cfg.Interval = viper.GetString("interval")
 
 	cfg.RedisAddr = viper.GetString("redis-addr")
 	cfg.RedisPassword = viper.GetString("redis-password")
 	cfg.RedisDB = viper.GetInt("redis-db")
+	cfg.StreamPrefix = viper.GetString("stream-prefix")
+	cfg.ConsumerGroup = viper.GetString("consumer-group")
 
 	cfg.HTTPAddr = viper.GetString("http-addr")
 	cfg.HTTPPort = viper.GetInt("http-port")
-	cfg.RateLimitRPS = viper.GetInt("rate-limit")
-	cfg.WSChannelMax = viper.GetInt("ws-channel-max")
+	cfg.OutputStreamPrefix = viper.GetString("output-stream-prefix")
 
 	cfg.SnapshotDir = viper.GetString("snapshot-dir")
 	cfg.SnapshotPeriod = viper.GetInt("snapshot-period")
 	cfg.SnapshotRetain = viper.GetInt("snapshot-retain")
-
-	cfg.DBPath = viper.GetString("db")
 
 	return cfg
 }

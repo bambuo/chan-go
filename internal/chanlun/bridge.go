@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"trade/internal/log"
+	"trade/internal/observability"
 	"trade/internal/structure"
 	"trade/internal/types"
 )
@@ -19,9 +20,15 @@ const bridgeComponent = "chanlun.bridge"
 
 // M3Bridge 连接 chanlun Pipeline 与 M3 结构树。
 type M3Bridge struct {
-	pipeline *Pipeline
-	tree     *structure.Tree
-	logger   *slog.Logger
+	pipeline   *Pipeline
+	tree       *structure.Tree
+	logger     *slog.Logger
+	signalSink SignalSink // 可选：信号引擎的接收器
+}
+
+// SignalSink 信号引擎接收器接口，由 signal.SignalEngine 实现。
+type SignalSink interface {
+	OnSignalInput(input *SignalInput)
 }
 
 // NewM3Bridge 创建桥接器。
@@ -33,9 +40,17 @@ func NewM3Bridge(pipeline *Pipeline, tree *structure.Tree) *M3Bridge {
 	}
 }
 
+// WithSignalSink 设置信号引擎接收器。
+func (b *M3Bridge) WithSignalSink(sink SignalSink) *M3Bridge {
+	b.signalSink = sink
+	return b
+}
+
 // OnKline 处理一根 K 线：管道处理 → M3 提交。
 // 返回 (是否产生了新版本, 版本ID, 错误)。
 func (b *M3Bridge) OnKline(kline *types.Kline) (bool, string, error) {
+	start := time.Now()
+
 	// 1. 管道处理
 	output := b.pipeline.Process(kline)
 
@@ -57,6 +72,8 @@ func (b *M3Bridge) OnKline(kline *types.Kline) (bool, string, error) {
 	// 6. 注册本次新增元素的 lineage
 	b.registerElements(output)
 
+	observability.M.RecordM2Duration(types.LevelL1, "pipeline", time.Since(start))
+
 	b.logger.Debug("M3 版本提交",
 		"symbol", output.Symbol,
 		"versionId", versionID,
@@ -64,6 +81,11 @@ func (b *M3Bridge) OnKline(kline *types.Kline) (bool, string, error) {
 		"elements", len(output.AllElements),
 		"fractals", len(output.AllFractals),
 	)
+
+	// 7. 触发信号识别
+	if b.signalSink != nil {
+		b.signalSink.OnSignalInput(output.ToSignalInput())
+	}
 
 	return true, versionID, nil
 }

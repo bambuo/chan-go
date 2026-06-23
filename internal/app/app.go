@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	gosignal "os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 	"trade/internal/ingest"
 	"trade/internal/levels"
 	"trade/internal/log"
-	"trade/internal/observability"
 	"trade/internal/resonance"
 	signals "trade/internal/signal"
 	"trade/internal/snapshot"
@@ -33,11 +31,10 @@ type App struct {
 	logger *slog.Logger
 
 	// === 基础设施 ===
-	bus      *eventbus.Bus                   // 旧事件总线（数据适配层路径）
-	gBus     *eventbus.GenericBus            // 通用事件总线（M1~M10 通信）
-	appState *state.Store                    // M7 状态存储
-	snapMgr  *snapshot.Manager               // M0 快照层
-	metrics  *observability.MetricsCollector // M10 Metrics
+	bus      *eventbus.Bus        // 旧事件总线（数据适配层路径）
+	gBus     *eventbus.GenericBus // 通用事件总线（M1~M10 通信）
+	appState *state.Store         // M7 状态存储
+	snapMgr  *snapshot.Manager    // M0 快照层
 
 	// === M2 缠论核心 ===
 	pipeline *chanlun.Pipeline // symbol 级处理管道
@@ -67,14 +64,9 @@ func New(cfg config.Config) (*App, error) {
 	logger := log.Component("main")
 	logger.Info("启动信号分析系统", "config", fmt.Sprintf("%+v", cfg))
 
-	// 确保数据目录存在
-	for _, dir := range []string{
-		filepath.Dir(cfg.DBFile()),
-		cfg.SnapshotDir,
-	} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, fmt.Errorf("创建目录 %s: %w", dir, err)
-		}
+	// 确保快照目录存在
+	if err := os.MkdirAll(cfg.SnapshotDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建快照目录 %s: %w", cfg.SnapshotDir, err)
 	}
 
 	// === 事件总线 ===
@@ -90,8 +82,7 @@ func New(cfg config.Config) (*App, error) {
 		RetainCount: cfg.SnapshotRetain,
 	})
 
-	// === M10 Metrics ===
-	metrics := observability.NewMetricsCollector()
+	// === M10 Metrics（包级单例 observability.M） ===
 
 	// === M2 缠论核心 Pipeline ===
 	pipeline := chanlun.NewPipeline()
@@ -103,13 +94,13 @@ func New(cfg config.Config) (*App, error) {
 	m3Bridge := chanlun.NewM3Bridge(pipeline, tree)
 
 	// === M4 递归级别 ===
-	lvlBldr := levels.New(gBus)
+	lvlBldr := levels.New(gBus, tree)
 
 	// === M5 信号引擎 ===
 	sigEngine := signals.New(gBus)
 
 	// === M6 共振引擎 ===
-	resEngine := resonance.New(gBus)
+	resEngine := resonance.New(gBus, tree)
 
 	// === M1 输入网关 ===
 	ingestG := ingest.New(ingest.Config{
@@ -147,13 +138,13 @@ func New(cfg config.Config) (*App, error) {
 	})
 
 	return &App{
-		cfg:       cfg,
-		logger:    logger,
-		bus:       bus,
-		gBus:      gBus,
-		appState:  appState,
-		snapMgr:   snapMgr,
-		metrics:   metrics,
+		cfg:      cfg,
+		logger:   logger,
+		bus:      bus,
+		gBus:     gBus,
+		appState: appState,
+		snapMgr:  snapMgr,
+		// metrics: 包级单例 observability.M
 		pipeline:  pipeline,
 		m3Bridge:  m3Bridge,
 		ingestG:   ingestG,
@@ -220,6 +211,7 @@ func (a *App) Shutdown() {
 	}
 
 	a.ingestG.Stop()
+	a.resEngine.Stop()
 
 	if a.cancel != nil {
 		a.cancel()
