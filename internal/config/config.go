@@ -27,6 +27,8 @@ type Config struct {
 	SnapshotPeriod int    // 快照周期（秒，默认 300 = 5min）
 	SnapshotRetain int    // 保留最近快照数（默认 24）
 
+	// === 调试（strucdump）===
+	DebugStructureDir string // 非空时，每次管道处理后向此目录输出结构 JSON 快照
 }
 
 // Default 返回推荐的默认配置。

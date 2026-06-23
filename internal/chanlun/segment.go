@@ -203,6 +203,24 @@ func (sp *SegmentProcessor) Reset(symbol string) {
 
 // ====== segState 方法 ======
 
+// Direction 返回线段方向。
+func (s *segment) Direction() types.ChanDirection { return s.direction }
+
+// StartPrice 返回线段起点价格。
+func (s *segment) StartPrice() float64 { return s.startPrice }
+
+// EndPrice 返回线段终点价格。
+func (s *segment) EndPrice() float64 { return s.endPrice }
+
+// High 返回线段区间最高价。
+func (s *segment) High() float64 { return s.high }
+
+// Low 返回线段区间最低价。
+func (s *segment) Low() float64 { return s.low }
+
+// Completed 返回线段是否已完成。
+func (s *segment) Completed() bool { return s.confirmed }
+
 // currentSegments 返回当前所有线段。
 func (s *segState) currentSegments() []*segment {
 	return s.segments

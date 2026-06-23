@@ -100,6 +100,10 @@ func newRootCmd() *cobra.Command {
 	flags.Int("snapshot-retain", envDefaultInt("CL_SNAPSHOT_RETAIN", defaultRetainSnapshot),
 		"保留最近快照数")
 
+	// === 调试结构输出 ===
+	flags.String("debug-structure-dir", envDefault("CL_DEBUG_STRUCTURE_DIR", ""),
+		"缠论结构调试输出目录（非空时启用，如 data/debug）")
+
 	return cmd
 }
 
@@ -129,6 +133,8 @@ func parseConfig() config.Config {
 	cfg.SnapshotDir = viper.GetString("snapshot-dir")
 	cfg.SnapshotPeriod = viper.GetInt("snapshot-period")
 	cfg.SnapshotRetain = viper.GetInt("snapshot-retain")
+
+	cfg.DebugStructureDir = viper.GetString("debug-structure-dir")
 
 	return cfg
 }

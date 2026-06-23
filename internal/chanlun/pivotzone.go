@@ -25,12 +25,18 @@ type pivotZone struct {
 	Completed      bool                // 是否已完成
 }
 
+// Index 返回中枢序号。
+func (pz *pivotZone) Index() int { return pz.index }
+
+// StrokeCount 返回中枢已延伸笔数（段数）。
+func (pz *pivotZone) StrokeCount() int { return pz.SegmentsCount }
+
 // pivotZoneState 单个 symbol 的中枢识别状态。
 type pivotZoneState struct {
 	mu           sync.Mutex
-	strokes      []*stroke     // 当前所有笔
-	pivotZones   []*pivotZone  // 已识别的中枢
-	processedIdx int           // 已处理的笔索引（增量用）
+	strokes      []*stroke    // 当前所有笔
+	pivotZones   []*pivotZone // 已识别的中枢
+	processedIdx int          // 已处理的笔索引（增量用）
 }
 
 // PivotZoneProcessor 中枢识别处理器。

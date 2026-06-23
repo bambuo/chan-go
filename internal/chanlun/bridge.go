@@ -18,12 +18,18 @@ import (
 // M3 Bridge 日志组件名。
 const bridgeComponent = "chanlun.bridge"
 
+// DebugWriter 是结构调试输出的抽象接口。
+type DebugWriter interface {
+	Write(output *PipelineOutput) error
+}
+
 // M3Bridge 连接 chanlun Pipeline 与 M3 结构树。
 type M3Bridge struct {
-	pipeline   *Pipeline
-	tree       *structure.Tree
-	logger     *slog.Logger
-	signalSink SignalSink // 可选：信号引擎的接收器
+	pipeline    *Pipeline
+	tree        *structure.Tree
+	logger      *slog.Logger
+	signalSink  SignalSink  // 可选：信号引擎的接收器
+	debugWriter DebugWriter // 可选：结构调试输出器
 }
 
 // SignalSink 信号引擎接收器接口，由 signal.SignalEngine 实现。
@@ -46,6 +52,13 @@ func (b *M3Bridge) WithSignalSink(sink SignalSink) *M3Bridge {
 	return b
 }
 
+// WithDebugWriter 设置结构调试输出器。
+// 启用后每次 OnKline 处理完毕会向 debugWriter 写入结构快照。
+func (b *M3Bridge) WithDebugWriter(w DebugWriter) *M3Bridge {
+	b.debugWriter = w
+	return b
+}
+
 // OnKline 处理一根 K 线：管道处理 → M3 提交。
 // 返回 (是否产生了新版本, 版本ID, 错误)。
 func (b *M3Bridge) OnKline(kline *types.Kline) (bool, string, error) {
@@ -53,6 +66,13 @@ func (b *M3Bridge) OnKline(kline *types.Kline) (bool, string, error) {
 
 	// 1. 管道处理
 	output := b.pipeline.Process(kline)
+
+	// 1b. 调试输出：将当前管道状态写入文件（始终写入，便于观察无变更时的状态）
+	if b.debugWriter != nil {
+		if err := b.debugWriter.Write(output); err != nil {
+			b.logger.Warn("调试结构输出失败", "symbol", output.Symbol, "error", err)
+		}
+	}
 
 	// 2. 无变更则跳过
 	if !output.HasChange || len(output.AllFractals) == 0 {

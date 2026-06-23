@@ -21,6 +21,7 @@ import (
 	signals "trade/internal/signal"
 	"trade/internal/snapshot"
 	"trade/internal/state"
+	"trade/internal/strucdump"
 	"trade/internal/structure"
 	"trade/internal/types"
 )
@@ -92,6 +93,13 @@ func New(cfg config.Config) (*App, error) {
 
 	// === M2 → M3 桥接器 ===
 	m3Bridge := chanlun.NewM3Bridge(pipeline, tree)
+
+	// 可选：挂载结构调试输出器
+	if cfg.DebugStructureDir != "" {
+		debugWriter := strucdump.NewWriter(cfg.DebugStructureDir)
+		m3Bridge.WithDebugWriter(debugWriter)
+		logger.Info("缠论结构调试输出已启用", "dir", cfg.DebugStructureDir)
+	}
 
 	// === M4 递归级别 ===
 	lvlBldr := levels.New(gBus, tree)
