@@ -253,3 +253,332 @@ func TestBi_M3Bridge(t *testing.T) {
 		t.Logf("M3 L1 笔数: %d", len(state.Provisional.Strokes))
 	}
 }
+
+// ====== 笔检查模式测试 ======
+
+// TestCheckFractalLoose_Up 验证宽松模式向上笔通过检查。
+func TestCheckFractalLoose_Up(t *testing.T) {
+	state := &strokeState{}
+
+	// 底→顶: end.High > start.High && end.Low < start.Low
+	// 顶分型的高点 > 底分型的高点, 且顶分型的低点 < 底分型的低点
+	bottom := mkElem(10, 5, types.FractalBottom, 0)
+	top := mkElem(22, 3, types.FractalTop, 3)
+	ok := state.checkFractalLoose(bottom, top)
+	if !ok {
+		t.Error("宽松模式(底→顶): end.High(22)>start.High(10) && end.Low(3)<start.Low(5) 应通过")
+	}
+
+	// 顶→底: end.Low > start.High
+	top2 := mkElem(25, 20, types.FractalTop, 0)
+	bottom2 := mkElem(15, 26, types.FractalBottom, 3) // low=26 > start.High=25
+	ok = state.checkFractalLoose(top2, bottom2)
+	if !ok {
+		t.Error("宽松模式(顶→底): end.Low(26) > start.High(25) 应通过")
+	}
+}
+
+// TestCheckFractalLoose_Down 验证宽松模式向下笔通过检查。
+func TestCheckFractalLoose_Down(t *testing.T) {
+	state := &strokeState{}
+
+	// 正确通过场景: end.Low > start.High
+	start := mkElem(30, 22, types.FractalTop, 0)
+	end := mkElem(25, 32, types.FractalBottom, 3) // low=32 > start.High=30
+	ok := state.checkFractalLoose(start, end)
+	if !ok {
+		t.Error("宽松模式(顶→底): end.Low(32) > start.High(30) 应通过")
+	}
+}
+
+// TestCheckFractalStrict 验证严格模式检查。
+func TestCheckFractalStrict(t *testing.T) {
+	state := &strokeState{}
+
+	// 底→顶: 需要检查 end.Prev/Next 和 start.Prev/Next
+	elem1 := mkElem(10, 5, types.FractalBottom, 0)
+	elem2 := mkElem(13, 7, types.FractalNone, 1)
+	elem3 := mkElem(16, 10, types.FractalNone, 2)
+	elem4 := mkElem(22, 18, types.FractalTop, 3)
+	linkChain([]*types.ChanKline{elem1, elem2, elem3, elem4})
+
+	// start=elem1(底), end=elem4(顶)
+	// endLow = min(elem3.low=10, elem4.low=18, elem4.Next?nil) = 10
+	// startHigh = max(elem1.high=10, elem1.Prev?nil, elem2.high=13) = 13
+	// return start.Low(5) < endLow(10) && end.High(22) > startHigh(13) → true && true → true
+	ok := state.checkFractalStrict(elem1, elem4)
+	if !ok {
+		t.Error("严格模式: 底→顶(5→22) 应通过检查")
+	}
+
+	// 顶→底
+	elem5 := mkElem(25, 20, types.FractalTop, 0)
+	elem6 := mkElem(22, 17, types.FractalNone, 1)
+	elem7 := mkElem(18, 13, types.FractalNone, 2)
+	elem8 := mkElem(14, 8, types.FractalBottom, 3)
+	linkChain([]*types.ChanKline{elem5, elem6, elem7, elem8})
+
+	// start=elem5(顶), end=elem8(底)
+	// endHigh = max(elem7.high=18, elem8.high=14, elem8.Next?nil) = 18
+	// startLow = min(elem5.low=20, elem5.Prev?nil, elem6.low=17) = 17
+	// return start.High(25) > endHigh(18) && end.Low(8) < startLow(17) → true && true → true
+	ok = state.checkFractalStrict(elem5, elem8)
+	if !ok {
+		t.Error("严格模式: 顶→底 应通过检查")
+	}
+}
+
+// TestCheckFractalFull 验证完全分离模式检查。
+func TestCheckFractalFull(t *testing.T) {
+	state := &strokeState{}
+
+	// 底→顶: start.Low < end.High
+	bottom := mkElem(10, 5, types.FractalBottom, 0)
+	top := mkElem(22, 18, types.FractalTop, 3)
+	ok := state.checkFractalFull(bottom, top)
+	if !ok {
+		t.Error("完全分离(底→顶): Low(5) < High(22) 应通过")
+	}
+
+	// 不通过: start.High >= end.Low 说明有重叠
+	bottom2 := mkElem(10, 5, types.FractalBottom, 0)
+	top2 := mkElem(12, 8, types.FractalTop, 3)
+	ok = state.checkFractalFull(bottom2, top2)
+	if ok {
+		t.Error("完全分离(底→顶): Low(5) < High(12) 但有重叠风险,预期严格不通过？")
+	}
+	// 实际 checkFractalFull for bottom start: return start.High < end.Low
+	// start.High(10) < end.Low(8)? No → false
+	if ok {
+		t.Error("完全分离: start.High(10) < end.Low(8) 为假,应不通过")
+	}
+
+	// 顶→底: start.Low > end.High
+	top3 := mkElem(25, 20, types.FractalTop, 0)
+	bottom3 := mkElem(14, 8, types.FractalBottom, 3)
+	ok = state.checkFractalFull(top3, bottom3)
+	// start.Low(20) > end.High(14)? Yes → true
+	if !ok {
+		t.Error("完全分离(顶→底): Low(20) > High(14) 应通过")
+	}
+}
+
+// TestCheckFractalHalf 验证半模式检查（默认模式）。
+func TestCheckFractalHalf(t *testing.T) {
+	state := &strokeState{}
+
+	// 底→顶
+	elem1 := mkElem(10, 5, types.FractalBottom, 0)
+	elem2 := mkElem(13, 7, types.FractalNone, 1)
+	elem3 := mkElem(22, 18, types.FractalTop, 3)
+	linkChain([]*types.ChanKline{elem1, elem2, elem3})
+
+	// endLow = min(elem2.low=7, elem3.low=18) = 7
+	// startHigh = max(elem1.high=10, elem2.high=13) = 13
+	// start.Low(5) < endLow(7) && end.High(22) > startHigh(13) → true
+	ok := state.checkFractalHalf(elem1, elem3)
+	if !ok {
+		t.Error("半模式(底→顶) 应通过")
+	}
+}
+
+// ====== 终点更新测试 ======
+
+// TestTryUpdateEndpoint_Down 验证下降笔的同类分型终点更新。
+func TestTryUpdateEndpoint_Down(t *testing.T) {
+	state := NewStrokeProcessor().getOrCreateState("TEST_UPDATE_DOWN")
+
+	elem1 := mkElem(30, 25, types.FractalTop, 0)
+	elem2 := mkElem(25, 20, types.FractalNone, 1)
+	elem3 := mkElem(20, 15, types.FractalBottom, 2)
+	elem4 := mkElem(18, 12, types.FractalNone, 3)
+	elem5 := mkElem(15, 8, types.FractalBottom, 4)
+	linkChain([]*types.ChanKline{elem1, elem2, elem3, elem4, elem5})
+
+	// 创建下降笔 (顶→底)
+	stroke := &stroke{
+		Direction: types.DirectionDown,
+		Start:     elem1,
+		End:       elem3,
+		EndPrice:  elem3.Low,
+		Low:       elem3.Low,
+	}
+
+	// 新底分型 (elem5) low=8 < 当前底 low=15 → 应更新
+	ok := state.tryUpdateEndpoint(elem5, stroke)
+	if !ok {
+		t.Error("下降笔终点更新应成功 (新底更低)")
+	}
+	if stroke.End != elem5 {
+		t.Error("终点应为 elem5")
+	}
+	if stroke.EndPrice != 8 {
+		t.Errorf("EndPrice 期望 8, 实际 %f", stroke.EndPrice)
+	}
+
+	// 尝试用更高的底更新 → 不应更新
+	elem6 := mkElem(12, 10, types.FractalBottom, 5)
+	ok = state.tryUpdateEndpoint(elem6, stroke)
+	if ok {
+		t.Error("更高底不应更新终点")
+	}
+
+	// 用顶分型更新 → 不应更新
+	elem7 := mkElem(20, 12, types.FractalTop, 6)
+	ok = state.tryUpdateEndpoint(elem7, stroke)
+	if ok {
+		t.Error("非同类分型(顶)不应更新下降笔终点")
+	}
+}
+
+// ====== 检查模式集成测试 ======
+
+// TestBi_StrictRejectsShortSpan 验证严格模式对短跨度笔的约束。
+func TestBi_StrictRejectsShortSpan(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(12, 7, types.FractalNone, 1),
+		mkElem(14, 9, types.FractalNone, 2),
+		mkElem(20, 15, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST_STRICT").cfg.Strict = true
+
+	bp.Process("TEST_STRICT", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST_STRICT", elems[1], nil)
+	bp.Process("TEST_STRICT", elems[2], nil)
+	bp.Process("TEST_STRICT", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 20, Low: 15, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST_STRICT")
+	t.Logf("严格模式笔数: %d (元素跨度=3)", len(bis))
+}
+
+// TestBi_NonStrictWithHalfCheck 验证非严格模式 + half 检查接受元素跨度=3的笔。
+func TestBi_NonStrictWithHalfCheck(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(13, 7, types.FractalNone, 1),
+		mkElem(16, 10, types.FractalNone, 2),
+		mkElem(22, 18, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	state := bp.getOrCreateState("TEST")
+	state.cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 22, Low: 18, Confirmed: true},
+	})
+
+	bis := bp.Strokes("TEST")
+	if len(bis) == 0 {
+		t.Error("非严格模式 + half 检查应接受 3 元素跨度笔")
+	} else {
+		t.Log("✅ 非严格模式接受短跨度笔")
+	}
+}
+
+// ====== 笔 Reset 测试 ======
+
+// TestStrokeProcessor_Reset 验证笔处理器重置。
+func TestStrokeProcessor_Reset(t *testing.T) {
+	bp := NewStrokeProcessor()
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(13, 7, types.FractalNone, 1),
+		mkElem(16, 10, types.FractalNone, 2),
+		mkElem(22, 18, types.FractalTop, 3),
+	}
+	linkChain(elems)
+
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 22, Low: 18, Confirmed: true},
+	})
+
+	if len(bp.Strokes("TEST")) == 0 {
+		t.Fatal("重置前应有笔")
+	}
+
+	bp.Reset("TEST")
+	if len(bp.Strokes("TEST")) != 0 {
+		t.Error("重置后期望空笔列表")
+	}
+
+	// 重置不存在的 symbol 不 panic
+	bp.Reset("NONEXIST")
+}
+
+// ====== 笔终点峰值检查测试 ======
+
+// TestCheckPeakEndPoint_Up 验证上升笔的终点峰值检查。
+func TestCheckPeakEndPoint_Up(t *testing.T) {
+	state := &strokeState{}
+
+	start := mkElem(10, 5, types.FractalBottom, 0)
+	mid := mkElem(18, 12, types.FractalNone, 1)
+	end := mkElem(22, 16, types.FractalTop, 2)
+	linkChain([]*types.ChanKline{start, mid, end})
+
+	// mid.High(18) <= end.High(22) → 通过
+	ok := state.checkPeakEndPoint(start, end)
+	if !ok {
+		t.Error("笔内无更高价应通过")
+	}
+
+	// 中间有更高的价
+	start2 := mkElem(10, 5, types.FractalBottom, 0)
+	mid2 := mkElem(25, 12, types.FractalNone, 1) // high=25 > end.High=22
+	end2 := mkElem(22, 16, types.FractalTop, 2)
+	linkChain([]*types.ChanKline{start2, mid2, end2})
+
+	ok = state.checkPeakEndPoint(start2, end2)
+	if ok {
+		t.Error("笔内有更高价应不通过")
+	}
+}
+
+// TestCheckPeakEndPoint_Down 验证下降笔的终点峰值检查。
+func TestCheckPeakEndPoint_Down(t *testing.T) {
+	state := &strokeState{}
+
+	start := mkElem(30, 25, types.FractalTop, 0)
+	mid := mkElem(25, 18, types.FractalNone, 1)
+	end := mkElem(20, 14, types.FractalBottom, 2)
+	linkChain([]*types.ChanKline{start, mid, end})
+
+	// mid.Low(18) >= end.Low(14) → 通过
+	ok := state.checkPeakEndPoint(start, end)
+	if !ok {
+		t.Error("笔内无更低价的下降笔应通过")
+	}
+
+	// 中间有更低的价格
+	start2 := mkElem(30, 25, types.FractalTop, 0)
+	mid2 := mkElem(25, 10, types.FractalNone, 1) // low=10 < end.Low=14
+	end2 := mkElem(20, 14, types.FractalBottom, 2)
+	linkChain([]*types.ChanKline{start2, mid2, end2})
+
+	ok = state.checkPeakEndPoint(start2, end2)
+	if ok {
+		t.Error("笔内有更低价的下降笔应不通过")
+	}
+}

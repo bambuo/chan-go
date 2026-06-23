@@ -89,6 +89,8 @@ func (t *Tree) Commit(symbol string, level types.Level, state *types.DualTrackSt
 		Reason:        "增量处理",
 	}
 
+	// 更新状态中的版本引用
+	state.Provisional.Version = ver
 	t.currentState[symbol][level] = state
 	t.versions[symbol][level] = append(t.versions[symbol][level], ver)
 
