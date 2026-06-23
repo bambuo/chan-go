@@ -6,3 +6,6 @@ internal/ent/**/*.go
 !internal/ent/generate.go
 !internal/ent/schema/
 .idea/
+dataset/
+node_modules/
+*.lock

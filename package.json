@@ -1,0 +1,20 @@
+{
+  "name": "chan-data-feeder",
+  "version": "1.0.0",
+  "description": "缠论引擎历史数据投喂脚本",
+  "private": true,
+  "scripts": {
+    "feed:bnb": "bun scripts/feed.js",
+    "feed:btc": "SYMBOL=BTCUSDT bun scripts/feed.js",
+    "feed:eth": "SYMBOL=ETHUSDT bun scripts/feed.js",
+    "feed:sol": "SYMBOL=SOLUSDT bun scripts/feed.js",
+    "feed:xrp": "SYMBOL=XRPUSDT bun scripts/feed.js",
+    "feed:all": "bun run feed:bnb & bun run feed:btc & bun run feed:eth & bun run feed:sol & bun run feed:xrp",
+    "feed:bnb:realtime": "PLAY_SPEED=60 bun scripts/feed.js",
+    "feed:btc:realtime": "SYMBOL=BTCUSDT PLAY_SPEED=60 bun scripts/feed.js",
+    "feed:sample": "END_LINE=10000 bun scripts/feed.js"
+  },
+  "dependencies": {
+    "ioredis": "^5.11.1"
+  }
+}
