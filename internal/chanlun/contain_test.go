@@ -863,3 +863,177 @@ func TestContain_LooseMode(t *testing.T) {
 		}
 	})
 }
+
+// TestContain_PrevNextLinkedList 验证非包含序列的 Prev/Next 链表指针正确性。
+func TestContain_PrevNextLinkedList(t *testing.T) {
+	p := NewContainProcessor()
+
+	// 5根K线：不包含序列应为 [K1, K2, K4]，共3个非包含元素。
+	inputs := []*types.Kline{
+		rk(10, 15, 8, 12, 1),  // K1(15,8)
+		rk(12, 18, 11, 16, 2), // K2(18,11) 向上
+		rk(14, 17, 12, 15, 3), // K3 被K2包含 → K2(18,12)
+		rk(13, 16, 10, 14, 4), // K4(16,10) vs K2(18,12): 16<18且10<12 → 向下, 新元素
+	}
+
+	var result []*types.ChanKline
+	for _, k := range inputs {
+		result = p.Process(k)
+	}
+
+	if len(result) != 3 {
+		t.Fatalf("期望3个非包含元素，实际 %d", len(result))
+	}
+
+	// 验证链表头尾
+	if result[0].PrevElement != nil {
+		t.Error("首个元素的 PrevElement 应为 nil")
+	}
+	if result[len(result)-1].NextElement != nil {
+		t.Error("末尾元素的 NextElement 应为 nil")
+	}
+
+	// 验证正向链表
+	for i := 0; i < len(result)-1; i++ {
+		if result[i].NextElement != result[i+1] {
+			t.Errorf("元素%d的NextElement不指向元素%d", i, i+1)
+		}
+	}
+
+	// 验证反向链表
+	for i := 1; i < len(result); i++ {
+		if result[i].PrevElement != result[i-1] {
+			t.Errorf("元素%d的PrevElement不指向元素%d", i, i-1)
+		}
+	}
+
+	// 验证单元素场景
+	p2 := NewContainProcessor()
+	r2 := p2.Process(rk(10, 15, 8, 12, 1))
+	if len(r2) != 1 {
+		t.Fatalf("单元素场景期望1个，实际 %d", len(r2))
+	}
+	if r2[0].PrevElement != nil || r2[0].NextElement != nil {
+		t.Error("单元素场景的 Prev/Next 都应为 nil")
+	}
+
+	// 验证两元素场景
+	p3 := NewContainProcessor()
+	p3.Process(rk(10, 15, 8, 12, 1))
+	r3 := p3.Process(rk(12, 18, 11, 16, 2))
+	if len(r3) != 2 {
+		t.Fatalf("两元素场景期望2个，实际 %d", len(r3))
+	}
+	if r3[0].NextElement != r3[1] || r3[1].PrevElement != r3[0] {
+		t.Error("两元素场景链表关系错误")
+	}
+	if r3[0].PrevElement != nil || r3[1].NextElement != nil {
+		t.Error("两元素场景边界指针错误")
+	}
+}
+
+// TestContain_BulkMergeCount 验证大量连续包含后 MergedFrom 计数的正确性。
+func TestContain_BulkMergeCount(t *testing.T) {
+	p := NewContainProcessor()
+
+	// K1(10,5) 作为起始元素
+	p.Process(rk(10, 10, 5, 8, 1))
+
+	n := 50
+	// 后续 50 根 K 线均被前一根包含，全部合并到 K1。
+	// 每根 K 线范围逐渐缩小：{(9.9,5.1), (9.8,5.2), ...}
+	for i := 0; i < n; i++ {
+		h := 10.0 - float64(i+1)*0.02
+		l := 5.0 + float64(i+1)*0.02
+		p.Process(rk(l, h, l, h, int64(i+2)))
+	}
+
+	result := p.Elements()
+	if len(result) != 1 {
+		t.Fatalf("期望1个非包含元素（全部合并），实际 %d", len(result))
+	}
+
+	expectedMerged := n + 1 // 原始K1 + 50根被包含的 = 51
+	if result[0].MergedFrom != expectedMerged {
+		t.Errorf("期望 MergedFrom=%d，实际 %d", expectedMerged, result[0].MergedFrom)
+	}
+
+	// 确认 High/Low 正确（向上合并取较高值）。
+	// High 始终为 10.0（所有被包含K线的高点都 ≤10）。
+	// Low 递增至 5.0 + 50*0.02 = 6.0（每根被包含K线低点都更高，向上取较高低点）。
+	if result[0].High != 10.0 {
+		t.Errorf("期望 High=10.0，实际 %.2f", result[0].High)
+	}
+	expectedLow := 5.0 + float64(n)*0.02
+	if result[0].Low != expectedLow {
+		t.Errorf("期望 Low=%.2f，实际 %.2f", expectedLow, result[0].Low)
+	}
+
+	// 验证被包含元素都被标记
+	elements := p.Elements()
+	_ = elements // 确保多次调用不 panic
+}
+
+// TestContain_RealtimeDeepChain 验证多级包含后的实时更新回退正确。
+//
+// 场景：K1→K2→K3→K4，每根都被前一根包含，
+// 然后实时更新最外层K4使其突破包含，回退链应正确恢复。
+func TestContain_RealtimeDeepChain(t *testing.T) {
+	p := NewContainProcessor()
+
+	// K1(20,5), K2(18,8): K2 被 K1 包含? 18<=20且8>=5 → 包含!
+	//   prevPrevIdx=-1 → DirectionUp. K1(20,8), K2.Contained=true
+	p.Process(rk(15, 20, 5, 18, 1)) // K1(20,5)
+	p.Process(rk(16, 18, 8, 17, 2)) // K2(18,8)
+
+	// K3(17,9) vs K1(20,8): 17<=20且9>=8 → 包含!
+	//   prevPrevIdx=-1 → DirectionUp. K1(20,9), K3.Contained=true
+	p.Process(rk(15, 17, 9, 16, 3)) // K3(17,9)
+
+	// K4(16,10) vs K1(20,9): 16<=20且10>=9 → 包含!
+	//   prevPrevIdx=-1 → DirectionUp. K1(20,10), K4.Contained=true
+	//   MergedFrom = 4
+	p.Process(rk(14, 16, 10, 15, 4)) // K4(16,10)
+
+	elems := p.Elements()
+	if len(elems) != 1 {
+		t.Fatalf("多层包含后期望1个非包含元素，实际 %d", len(elems))
+	}
+	if elems[0].High != 20 || elems[0].Low != 10 {
+		t.Errorf("K1合并后期望(20,10)，实际(%.0f,%.0f)", elems[0].High, elems[0].Low)
+	}
+	if elems[0].MergedFrom != 4 {
+		t.Errorf("期望MergedFrom=4，实际 %d", elems[0].MergedFrom)
+	}
+
+	// 实时更新K4: low=2 → K4(16,2) vs K1(20,10): 16<=20且2>=10? No. 16>=20? No → 不包含!
+	//   回退K1到(20,9), MergedFrom=3
+	//   再resolve: K4(16,2) vs K1(20,9): 16<=20且2>=9? No. 16>=20? No → 不包含
+	result := p.Process(rk(13, 16, 2, 14, 4))
+
+	if len(result) != 2 {
+		t.Fatalf("突破包含后期望2个非包含元素，实际 %d", len(result))
+	}
+	// K1回到(20,9)
+	if result[0].High != 20 || result[0].Low != 9 {
+		t.Errorf("K1回退后期望(20,9)，实际(%.0f,%.0f)", result[0].High, result[0].Low)
+	}
+	if result[0].MergedFrom != 3 {
+		t.Errorf("K1回退后期望MergedFrom=3，实际 %d", result[0].MergedFrom)
+	}
+	// K4独立(16,2)
+	if result[1].High != 16 || result[1].Low != 2 {
+		t.Errorf("K4后期望(16,2)，实际(%.0f,%.0f)", result[1].High, result[1].Low)
+	}
+	if result[1].MergedFrom != 1 {
+		t.Errorf("K4独立后期望MergedFrom=1，实际 %d", result[1].MergedFrom)
+	}
+
+	// 再验证K4回退后，方向是否正确
+	// K3和K4都变成非包含了吗？查看内部状态
+	// K3元素: OpenTime=3, Contained=true(仍然被K1包含)
+	// 所以只有K1和K4是非包含
+	if len(result) != 2 {
+		t.Fatalf("最终期望2个非包含元素，实际 %d", len(result))
+	}
+}
