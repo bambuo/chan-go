@@ -814,31 +814,29 @@ func TestContain_LooseMode(t *testing.T) {
 		p := NewContainProcessor()
 		p.SetStrictMode(false) // 宽松模式
 
-		// K1=(10,5), K2=(12,4): K2被K1包含? 12>10且4<5 → 不包含
-		// K2=(12,4), K3=(13,3): K3被K2包含? 13>12且3<4 → 不包含
-		// 所以需要包含场景：K1=(10,5), K2=(12,6) 被K1包含? 12>10且6>5 → 不包含
-		// K1=(10,5), K2=(8,6) 被K1包含? 8<=10且6>=5 → 包含！
-		// 严格：8<10且6>5 → 既不是up也不是down → DirectionNone → 默认向上
-		// 宽松：8<10 → 不满足(high更高)。6>5 → low更高，不是更低 → 不满足(down需要low更低)
-		//    → 同样DirectionNone
-
-		// 更好的测试场景：
-		// K1=(10,5), K2=(9,6): 包含(K2在K1内)
-		// 严格模式: high=9<10(down方向), low=6>5(up方向) → 矛盾 → DirectionNone → 默认向上
-		//    → 合并: up取高 {max(10,9)=10, max(5,6)=6} → K1'=(10,6)
-		// 宽松模式: high=9<10, 不满足(需要high更高)。low=6>5, 不满足(需要low更低)。
-		//    → 同样DirectionNone → 默认向上
-		//    → 结果相同
-
-		// 场景：范围扩大 K1=(10,5), K2=(12,3)
+		// 注意：以下追踪涉及 K2 范围涵盖 K1 的特殊场景。
+		//
+		// Step1: K1(10,5)
+		// Step2: K2(12,3) contained by K1? isContained(12,3 vs 10,5):
+		//   12>=10(高) 且 3<=5(低) → K2 范围覆盖 K1，K2 包含 K1！
+		//   resolveDirection: prevPrevIdx=-1(仅一根非包含) → DirectionUp
+		//   merge up: K1 吸收 K2 → K1(12,5), K2.Contained=true, K1.MergedFrom=2
+		//   注意：被包含的是 K1(旧的范围小)，K2(范围大)变为下一根的比较基准
+		//
+		// Step3: K3(13,4) 到来，prevNonContainedIndex 跳过 K2(contained)
+		//   找到 K1(12,5) 作为 prev。isContained(K3, K1): 13>=12 且 4<=5 → 再次包含！
+		//   ㊟ 注释错误纠正：不是"K3 vs K2 不包含"，而是"K3 vs K1(12,5) 包含"
+		//   resolveDirection: prevPrevIdx=-1 → DirectionUp
+		//   merge up: K1(13,5), K3.Contained=true, K1.MergedFrom=3
+		//
+		// 最终非包含序列：[K1(13,5)]，所有新 K 线范围都大于 K1 而被 K1 吸收。
+		// 此测试仅验证不 panic，不 assert 具体值。
 		p.Process(rk(5, 10, 5, 8, 1))  // K1(10,5)
-		p.Process(rk(10, 12, 3, 8, 2)) // K2(12,3) 不包含K1
-
-		// K3(13,4) vs K2(12,3): 13>12且4>3 → 不包含。
+		p.Process(rk(10, 12, 3, 8, 2)) // K2(12,3)
 		p.Process(rk(15, 13, 4, 8, 3)) // K3(13,4)
 
 		e := p.Elements()
-		t.Logf("宽松模式非包含元素数: %d", len(e))
+		t.Logf("宽松模式非包含元素数: %d (仅K1吸收所有K线: h=%.0f l=%.0f)", len(e), e[0].High, e[0].Low)
 		// 只要不 panic 即通过
 	})
 
