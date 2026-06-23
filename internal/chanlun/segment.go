@@ -102,19 +102,23 @@ func (fs *featureSeq) applyInclusion() {
 	}
 }
 
-// detectFractal 检测特征序列分型。
+// detectFractal 检测特征序列分型（参照普通分型 AND 双条件定义）。
+// 原文："参照一般K线图关于顶分型与底分型的定义"
+// 即顶分型要求高点最高且低点也最高，底分型要求低点最低且高点也最低。
 func (fs *featureSeq) detectFractal() types.FeatureSeqFractal {
 	var result types.FeatureSeqFractal
 	elems := fs.elems
 
 	for i := 1; i < len(elems)-1; i++ {
-		// 顶分型：中 > 左 且 中 > 右
-		if elems[i].high > elems[i-1].high && elems[i].high > elems[i+1].high {
+		// 顶分型：中点最高 且 中点也最高（AND，同普通分型）
+		if elems[i].high > elems[i-1].high && elems[i].high > elems[i+1].high &&
+			elems[i].low > elems[i-1].low && elems[i].low > elems[i+1].low {
 			result.HasTop = true
 			result.TopIndex = elems[i].index
 		}
-		// 底分型：中 < 左 且 中 < 右
-		if elems[i].low < elems[i-1].low && elems[i].low < elems[i+1].low {
+		// 底分型：低点最低 且 高点也最低（AND，同普通分型）
+		if elems[i].low < elems[i-1].low && elems[i].low < elems[i+1].low &&
+			elems[i].high < elems[i-1].high && elems[i].high < elems[i+1].high {
 			result.HasBottom = true
 			result.BottomIdx = elems[i].index
 		}
