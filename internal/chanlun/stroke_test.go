@@ -427,3 +427,222 @@ func TestStrokeStateReset(t *testing.T) {
 		t.Errorf("Reset 后期望空 candidates, 实际 %d", len(state.candidates))
 	}
 }
+
+// ====== 虚笔机制测试（笔.md §7/§10） ======
+
+// TestStroke_VirtualCreatedOnUnconfirmedFractal 验证：
+// 已确认分型建立第一笔后，一个"已识别但未确认"的异类分型应触发虚笔创建。
+// 虚笔存在于 strokeState.strokes 内部，但 Strokes() 必须过滤掉它（不外泄到下游）。
+func TestStroke_VirtualCreatedOnUnconfirmedFractal(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(13, 7, types.FractalNone, 1),
+		mkElem(16, 10, types.FractalNone, 2),
+		mkElem(22, 18, types.FractalTop, 3),
+		mkElem(19, 14, types.FractalNone, 4),
+		mkElem(16, 11, types.FractalNone, 5),
+		mkElem(12, 6, types.FractalBottom, 6), // 未确认的异类分型（底）
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	// 建立 first 确认笔（底0→顶3）
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, OpenTime: elems[0].OpenTime, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 22, Low: 18, OpenTime: elems[3].OpenTime, Confirmed: true},
+	})
+
+	// 确认第一笔已建立
+	if got := bp.Strokes("TEST"); len(got) != 1 {
+		t.Fatalf("第一笔建立后期望 1 条确认笔, 实际 %d", len(got))
+	}
+
+	// elems[4]、elems[5] 无分型
+	bp.Process("TEST", elems[4], nil)
+	bp.Process("TEST", elems[5], nil)
+
+	// elems[6] 是底分型但【未确认】（allFractals 不含它）→ 应触发虚笔
+	bp.Process("TEST", elems[6], nil)
+
+	st := bp.getOrCreateState("TEST")
+	if len(st.strokes) != 2 {
+		t.Fatalf("虚笔创建后期望内部 strokes 共 2 条, 实际 %d", len(st.strokes))
+	}
+	lastInternal := st.strokes[len(st.strokes)-1]
+	if !lastInternal.Virtual {
+		t.Error("最后一笔应为虚笔 (Virtual=true)")
+	}
+	if lastInternal.Direction != types.DirectionDown {
+		t.Errorf("虚笔方向期望 down, 实际 %v", lastInternal.Direction)
+	}
+
+	// Strokes() 必须过滤掉虚笔（下游隔离契约）
+	if got := bp.Strokes("TEST"); len(got) != 1 {
+		t.Errorf("Strokes() 应过滤虚笔, 期望 1 条, 实际 %d", len(got))
+	}
+}
+
+// TestStroke_VirtualConfirmedToReal 验证：虚笔出现后，分型被确认，虚笔清理并转为确认笔。
+func TestStroke_VirtualConfirmedToReal(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(13, 7, types.FractalNone, 1),
+		mkElem(16, 10, types.FractalNone, 2),
+		mkElem(22, 18, types.FractalTop, 3),
+		mkElem(19, 14, types.FractalNone, 4),
+		mkElem(16, 11, types.FractalNone, 5),
+		mkElem(12, 6, types.FractalBottom, 6),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, OpenTime: elems[0].OpenTime, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 22, Low: 18, OpenTime: elems[3].OpenTime, Confirmed: true},
+	})
+	bp.Process("TEST", elems[4], nil)
+	bp.Process("TEST", elems[5], nil)
+	// 虚笔创建（elems[6] 未确认）
+	bp.Process("TEST", elems[6], nil)
+
+	st := bp.getOrCreateState("TEST")
+	if len(st.strokes) != 2 || !st.strokes[1].Virtual {
+		t.Fatal("前置: 应已创建虚笔")
+	}
+
+	// 再次喂入 elems[6]，这次确认它（allFractals 含它）
+	bp.Process("TEST", elems[6], []types.Fractal{
+		{Type: types.FractalBottom, Index: 6, High: 12, Low: 6, OpenTime: elems[6].OpenTime, Confirmed: true},
+	})
+
+	// 虚笔应被清理并转为确认笔
+	bis := bp.Strokes("TEST")
+	if len(bis) != 2 {
+		t.Fatalf("虚笔转确认后期望 2 条确认笔, 实际 %d", len(bis))
+	}
+	if bis[1].Virtual {
+		t.Error("第二条笔不应再是虚笔")
+	}
+	if !bis[1].Confirmed {
+		t.Error("第二条笔应为确认笔")
+	}
+	if bis[1].Direction != types.DirectionDown {
+		t.Errorf("第二条笔方向期望 down, 实际 %v", bis[1].Direction)
+	}
+}
+
+// TestStroke_VirtualNotLeakedToDownstream 验证：任何时刻 Strokes() 都过滤虚笔。
+func TestStroke_VirtualNotLeakedToDownstream(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(10, 5, types.FractalBottom, 0),
+		mkElem(13, 7, types.FractalNone, 1),
+		mkElem(16, 10, types.FractalNone, 2),
+		mkElem(22, 18, types.FractalTop, 3),
+		mkElem(19, 14, types.FractalNone, 4),
+		mkElem(16, 11, types.FractalNone, 5),
+		mkElem(12, 6, types.FractalBottom, 6),
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalBottom, Index: 0, High: 10, Low: 5, OpenTime: elems[0].OpenTime, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalTop, Index: 3, High: 22, Low: 18, OpenTime: elems[3].OpenTime, Confirmed: true},
+	})
+	bp.Process("TEST", elems[4], nil)
+	bp.Process("TEST", elems[5], nil)
+	bp.Process("TEST", elems[6], nil) // 创建虚笔
+
+	// 虚笔存在但 Strokes() 不含它
+	st := bp.getOrCreateState("TEST")
+	hasVirtual := false
+	for _, s := range st.strokes {
+		if s.Virtual {
+			hasVirtual = true
+		}
+	}
+	if !hasVirtual {
+		t.Fatal("前置: 应已创建虚笔")
+	}
+	for _, s := range bp.Strokes("TEST") {
+		if s.Virtual {
+			t.Error("Strokes() 不应包含虚笔 (下游隔离契约被破坏)")
+		}
+	}
+}
+
+// TestStroke_VirtualEndpointUpdate 验证：同类分型沿方向延伸虚笔终点，PreviousEnds 正确记录。
+//
+// 向上虚笔建立后，再来一个更高的顶分型（未确认）应更新虚笔终点并记录 PreviousEnds。
+func TestStroke_VirtualEndpointUpdate(t *testing.T) {
+	elems := []*types.ChanKline{
+		mkElem(22, 18, types.FractalTop, 0),
+		mkElem(19, 14, types.FractalNone, 1),
+		mkElem(16, 11, types.FractalNone, 2),
+		mkElem(10, 5, types.FractalBottom, 3),
+		mkElem(13, 7, types.FractalNone, 4),
+		mkElem(17, 11, types.FractalNone, 5),
+		mkElem(25, 20, types.FractalTop, 6), // 更高的顶（未确认），与 lastEndpoint(底3) 异类 → 创建向上虚笔
+		mkElem(21, 16, types.FractalNone, 7),
+		mkElem(30, 24, types.FractalTop, 8), // 更更高的顶（未确认），同类 → 延伸虚笔终点
+	}
+	linkChain(elems)
+
+	bp := NewStrokeProcessor()
+	bp.getOrCreateState("TEST").cfg.Strict = false
+
+	// 建立第一条确认向下笔（顶0→底3）
+	bp.Process("TEST", elems[0], []types.Fractal{
+		{Type: types.FractalTop, Index: 0, High: 22, Low: 18, OpenTime: elems[0].OpenTime, Confirmed: true},
+	})
+	bp.Process("TEST", elems[1], nil)
+	bp.Process("TEST", elems[2], nil)
+	bp.Process("TEST", elems[3], []types.Fractal{
+		{Type: types.FractalBottom, Index: 3, High: 10, Low: 5, OpenTime: elems[3].OpenTime, Confirmed: true},
+	})
+
+	// elems[6] 顶分型（未确认），与 lastEndpoint(底3) 异类 → 创建向上虚笔
+	bp.Process("TEST", elems[4], nil)
+	bp.Process("TEST", elems[5], nil)
+	bp.Process("TEST", elems[6], nil)
+
+	st := bp.getOrCreateState("TEST")
+	last := st.strokes[len(st.strokes)-1]
+	if !last.Virtual || last.Direction != types.DirectionUp {
+		t.Fatalf("前置: 应创建向上虚笔, 实际 Virtual=%v dir=%v", last.Virtual, last.Direction)
+	}
+	prevEndCount := len(last.PreviousEnds)
+
+	// elems[8] 更高的顶（未确认），同类 → 延伸虚笔终点
+	bp.Process("TEST", elems[7], nil)
+	bp.Process("TEST", elems[8], nil)
+
+	last = st.strokes[len(st.strokes)-1]
+	if !last.Virtual {
+		t.Fatal("延伸后仍应为虚笔")
+	}
+	if last.End != elems[8] {
+		t.Error("虚笔终点应更新为 elems[8]（更高的顶）")
+	}
+	if len(last.PreviousEnds) != prevEndCount+1 {
+		t.Errorf("PreviousEnds 应 +1, 期望 %d, 实际 %d", prevEndCount+1, len(last.PreviousEnds))
+	}
+}

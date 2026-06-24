@@ -69,6 +69,11 @@ func (bp *StrokeProcessor) Process(symbol string, elem *types.ChanKline, allFrac
 	// 如果当前元素有有效分型且尚未处理，记录它
 	if elem.FractalType != types.FractalNone && !st.processedFractalTS[elem.OpenTime] {
 		st.pendingFractals = append(st.pendingFractals, elem)
+		// 虚笔尝试（笔.md §10.2 情况二）：分型已识别但尚未确认时，
+		// 若它与最后确认终点异类且满足成笔条件，创建一条虚笔用于实时显示。
+		// 虚笔被 Strokes() 的 !Virtual 过滤，不外泄到下游；分型后续确认时由
+		// clearVirtualStroke 清理并转为确认笔。
+		st.tryVirtualStroke(elem)
 	}
 
 	// 增量索引：维护已确认分型的 OpenTime map，O(1) 查找替代全量扫描。
@@ -314,7 +319,6 @@ func (s *strokeState) checkSpan(start, end *types.ChanKline) bool {
 		}
 	}
 
-	// 缺口计为K线（已通过跨度计入）
 	return true
 }
 
@@ -422,6 +426,95 @@ func (s *strokeState) createConfirmedStroke(start, end *types.ChanKline) *stroke
 		Low:        low,
 	}
 	return newStroke
+}
+
+// createVirtualStroke 创建一条虚笔（笔.md §7/§10.2）。
+// 复用确认笔的方向与极值计算逻辑，差异仅 Virtual=true。
+// 虚笔表示尚未确认的实时笔，被 Strokes() 的 !Virtual 过滤，不外泄到下游。
+func (s *strokeState) createVirtualStroke(start, end *types.ChanKline) *stroke {
+	vs := s.createConfirmedStroke(start, end)
+	vs.Virtual = true
+	return vs
+}
+
+// tryVirtualStroke 尝试基于一个"已识别但尚未确认"的分型创建或更新虚笔（笔.md §10.2）。
+//
+// 分两种情况：
+//  1. 最后一笔是虚笔：新分型与虚笔终点同类（沿虚笔方向）→ 延伸虚笔终点（记录 PreviousEnds）；
+//     新分型与虚笔终点异类（虚笔方向反转）→ 清理虚笔，回到情况 2 处理。
+//  2. 最后一笔不是虚笔：新分型与 lastEndpoint（确认终点）异类且满足成笔条件 → 创建新虚笔。
+//
+// 虚笔不改变 lastEndpoint（确认终点状态），确保分型确认后能正确清理/转换。
+func (s *strokeState) tryVirtualStroke(elem *types.ChanKline) {
+	if s.lastEndpoint == nil {
+		return
+	}
+
+	// 情况1：最后一笔是虚笔 → 用虚笔终点判断同类/异类。
+	if len(s.strokes) > 0 {
+		last := s.strokes[len(s.strokes)-1]
+		if last.Virtual {
+			if elem.FractalType == last.End.FractalType {
+				// 同类（沿虚笔方向）→ 延伸虚笔终点。
+				s.tryUpdateVirtualEndpoint(elem)
+				return
+			}
+			// 异类（虚笔方向反转）→ 清理虚笔，落到情况2基于 lastEndpoint 判断。
+			s.clearVirtualStroke()
+		}
+	}
+
+	// 情况2：基于 lastEndpoint（确认终点）创建新虚笔。
+	// 仅异类分型才可能成笔；同类分型对确认终点无意义（确认笔的同类更新由 processConfirmedFractal 处理）。
+	if elem.FractalType == s.lastEndpoint.FractalType {
+		return
+	}
+	if !s.canFormStroke(s.lastEndpoint, elem) {
+		return
+	}
+
+	// 清理后若最后一笔仍是虚笔（理论上不应发生），放弃本次创建。
+	if len(s.strokes) > 0 && s.strokes[len(s.strokes)-1].Virtual {
+		return
+	}
+
+	vs := s.createVirtualStroke(s.lastEndpoint, elem)
+	s.strokes = append(s.strokes, vs)
+	// 不更新 lastEndpoint：虚笔是预测性的，确认终点保持不变。
+}
+
+// tryUpdateVirtualEndpoint 同类分型更新虚笔的虚拟终点（笔.md §10.2 情况一）。
+// 仅当最后一笔是虚笔、且新分型沿虚笔方向创新高/低时，更新虚拟终点并记录 PreviousEnds。
+func (s *strokeState) tryUpdateVirtualEndpoint(elem *types.ChanKline) {
+	if len(s.strokes) == 0 {
+		return
+	}
+	last := s.strokes[len(s.strokes)-1]
+	if !last.Virtual {
+		return
+	}
+
+	if last.Direction == types.DirectionUp {
+		// 向上虚笔：新顶分型且高点更高才延伸。
+		if elem.FractalType == types.FractalTop && elem.High > last.End.High {
+			last.PreviousEnds = append(last.PreviousEnds, last.End)
+			last.End = elem
+			last.EndPrice = elem.High
+			if elem.High > last.High {
+				last.High = elem.High
+			}
+		}
+	} else {
+		// 向下虚笔：新底分型且低点更低才延伸。
+		if elem.FractalType == types.FractalBottom && elem.Low < last.End.Low {
+			last.PreviousEnds = append(last.PreviousEnds, last.End)
+			last.End = elem
+			last.EndPrice = elem.Low
+			if elem.Low < last.Low {
+				last.Low = elem.Low
+			}
+		}
+	}
 }
 
 // Reset 重置笔状态。
