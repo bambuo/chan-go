@@ -56,6 +56,9 @@ type LevelBuilder struct {
 	// 每个 symbol+level 已处理的走势类型水位线
 	processedTrendPatterns map[string]map[types.Level]int
 
+	// 每个 symbol+level 上一次见到走势总数（检测数量变动）
+	lastPatternTotal map[string]map[types.Level]int
+
 	// 每个 symbol+level 的当前双轨状态缓存
 	states map[string]map[types.Level]*types.DualTrackState
 
@@ -81,6 +84,7 @@ func New(bus *eventbus.GenericBus, tree *structure.Tree) *LevelBuilder {
 		tree:                   tree,
 		logger:                 log.Component("m4.levels"),
 		processedTrendPatterns: make(map[string]map[types.Level]int),
+		lastPatternTotal:       make(map[string]map[types.Level]int),
 		states:                 make(map[string]map[types.Level]*types.DualTrackState),
 		timeSamples:            make(map[string]map[types.Level][]durationSample),
 		timeHintCache:          make(map[string]map[types.Level]*types.LevelTimeHint),
@@ -110,26 +114,38 @@ func New(bus *eventbus.GenericBus, tree *structure.Tree) *LevelBuilder {
 // 因此不能同步调用 tree 的读方法，否则会导致死锁。
 // 解决方案：将实际处理通过 goroutine 异步执行。
 func (b *LevelBuilder) onStructureVersionChanged(evt types.Event) {
+	symbol := evt.Symbol
+
 	payload, ok := evt.Payload.(types.StructureVersionPayload)
 	if !ok {
+		b.logger.Warn("收到 M3 事件但 Payload 类型断言失败",
+			"eventType", evt.Type,
+			"symbol", symbol,
+		)
 		return
 	}
 
 	// 只处理基础级别 L1 的变更
 	if payload.Level != baseLevel {
+		b.logger.Info("跳过高级别事件",
+			"symbol", symbol,
+			"payloadLevel", payload.Level,
+			"baseLevel", baseLevel,
+		)
 		return
 	}
 
-	symbol := evt.Symbol
-	b.logger.Debug("M3 版本变更，异步触发级别递归",
+	b.logger.Info("M3 L1 版本变更，触发级别递归",
 		"symbol", symbol,
-		"level", payload.Level,
 		"versionId", payload.NewVersion.VersionID,
 	)
 
-	// 异步执行，避免在 tree.Commit 的写锁内调用 tree 的读方法
+	// 异步执行，避免阻塞 OnKline 调用链
 	go b.processLevelRecursive(symbol, baseLevel)
 }
+
+// ProcessPending 保留兼容（新架构使用 LevelRunner 无需此方法）。
+func (b *LevelBuilder) ProcessPending(symbol string) {}
 
 // ========================================================================
 // 核心递归逻辑
@@ -170,13 +186,16 @@ func (b *LevelBuilder) processLevelRecursive(symbol string, fromLevel types.Leve
 	// 2. 获取新完成的走势类型
 	completedPatterns := b.getNewlyCompletedTrendPatterns(symbol, fromLevel, fromState)
 	if len(completedPatterns) == 0 {
+		b.logger.Info("无新完成的走势类型",
+			"symbol", symbol,
+			"fromLevel", fromLevel,
+		)
 		return
 	}
 
-	b.logger.Debug("检测到新完成的走势类型",
+	b.logger.Info("检测到新完成的走势类型",
 		"symbol", symbol,
 		"fromLevel", fromLevel,
-		"targetLevel", targetLevel,
 		"count", len(completedPatterns),
 	)
 
@@ -218,7 +237,7 @@ func (b *LevelBuilder) processLevelRecursive(symbol string, fromLevel types.Leve
 	diff := b.buildDiff(symbol, targetLevel, state)
 	versionID := b.tree.Commit(symbol, targetLevel, state, diff)
 
-	b.logger.Debug("高级别版本已提交",
+	b.logger.Info("高级别版本已提交",
 		"symbol", symbol,
 		"level", targetLevel,
 		"versionId", versionID,
@@ -243,29 +262,33 @@ func (b *LevelBuilder) processLevelRecursive(symbol string, fromLevel types.Leve
 
 // getNewlyCompletedTrendPatterns 返回 fromLevel 中新完成的走势类型列表。
 //
-// 通过水位线（processedTrendPatterns）追踪已处理的走势类型数量，
-// 只返回从上次处理到当前之间新出现的完成走势类型。
-// 读取确认轨（Confirmed）的走势类型，因为确认轨代表稳定的结构。
+// classify() 每次全量重建走势类型，当新走势出现时，前一个走势
+// 会从 Completed=false 变为 Completed=true。仅用 watermark 按索引
+// 跳跃会漏掉这个状态变更。解决方案：检测总走势数量变化时重置 watermark。
 func (b *LevelBuilder) getNewlyCompletedTrendPatterns(symbol string, level types.Level, state *types.DualTrackState) []types.TrendPattern {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// 初始化水位线
 	if _, ok := b.processedTrendPatterns[symbol]; !ok {
 		b.processedTrendPatterns[symbol] = make(map[types.Level]int)
 	}
+	if _, ok := b.lastPatternTotal[symbol]; !ok {
+		b.lastPatternTotal[symbol] = make(map[types.Level]int)
+	}
 
 	watermark := b.processedTrendPatterns[symbol][level]
-
-	// 从确认轨读取走势类型
 	patterns := state.Confirmed.TrendPatterns
 
-	// 没有新数据
+	// 总数量变化 → classify() 可能改变了之前走势的 Completed 状态 → 全量重扫
+	if len(patterns) != b.lastPatternTotal[symbol][level] {
+		watermark = 0
+	}
+
 	if len(patterns) <= watermark {
+		b.lastPatternTotal[symbol][level] = len(patterns)
 		return nil
 	}
 
-	// 只取新完成的走势类型
 	var result []types.TrendPattern
 	for i := watermark; i < len(patterns); i++ {
 		if patterns[i].Completed {
@@ -273,19 +296,8 @@ func (b *LevelBuilder) getNewlyCompletedTrendPatterns(symbol string, level types
 		}
 	}
 
-	// 更新水位线到当前总数
 	b.processedTrendPatterns[symbol][level] = len(patterns)
-
-	if len(result) > 0 {
-		b.logger.Debug("增量走势类型",
-			"symbol", symbol,
-			"level", level,
-			"watermark", watermark,
-			"total", len(patterns),
-			"newCompleted", len(result),
-		)
-	}
-
+	b.lastPatternTotal[symbol][level] = len(patterns)
 	return result
 }
 

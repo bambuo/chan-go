@@ -6,9 +6,10 @@ package chanlun
 
 import "trade/internal/types"
 
-// SignalInput 信号引擎输入，由 M3Bridge 从 PipelineOutput 转换而来。
+// SignalInput 信号引擎输入，由 LevelRunner 从 PipelineOutput 转换而来。
 type SignalInput struct {
 	Symbol        string
+	Level         types.Level // 该输入所属的级别（L1/L2/L3/L4）
 	Strokes       []StrokeInfo
 	PivotZones    []PivotZoneInfo
 	TrendPatterns []TrendPatternInfo
@@ -56,6 +57,17 @@ type DivergenceInfo struct {
 	Confirmed  bool    // Ratio < 0.95
 }
 
+// CompletedPatterns 返回本次新增的已完成走势类型（作为下一级的"K线"）。
+func (out *PipelineOutput) CompletedPatterns() []types.TrendPattern {
+	var result []types.TrendPattern
+	for _, tp := range out.NewTrendPatterns {
+		if tp.Completed {
+			result = append(result, trendPatternToTypes(tp))
+		}
+	}
+	return result
+}
+
 // ToSignalInput 将 PipelineOutput 转换为 SignalInput。
 func (out *PipelineOutput) ToSignalInput() *SignalInput {
 	if out == nil {
@@ -97,17 +109,17 @@ func (out *PipelineOutput) ToSignalInput() *SignalInput {
 
 	for _, d := range out.Divergences {
 		input.Divergences = append(input.Divergences, DivergenceInfo{
-			Type:      d.Type,
-			Scope:     d.Scope,
-			ZoneIdx:   d.ZoneIdx,
-			EntryMACD: d.EntryMACD,
-			ExitMACD:  d.ExitMACD,
+			Type:       d.Type,
+			Scope:      d.Scope,
+			ZoneIdx:    d.ZoneIdx,
+			EntryMACD:  d.EntryMACD,
+			ExitMACD:   d.ExitMACD,
 			EntryPrice: d.EntryPrice,
 			ExitPrice:  d.ExitPrice,
-			ExitEnd:   d.ExitEnd,
-			EntryEnd:  d.EntryEnd,
-			Ratio:     d.Ratio,
-			Confirmed: d.Confirmed,
+			ExitEnd:    d.ExitEnd,
+			EntryEnd:   d.EntryEnd,
+			Ratio:      d.Ratio,
+			Confirmed:  d.Confirmed,
 		})
 	}
 

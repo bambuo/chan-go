@@ -74,6 +74,10 @@ func (e *SignalEngine) OnSignalInput(input *chanlun.SignalInput) {
 	if input == nil {
 		return
 	}
+	// 默认 L1（向后兼容，测试中未显式设置 Level 时）
+	if input.Level == types.LevelL0 {
+		input.Level = types.LevelL1
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.recognize(input.Symbol, input)
@@ -443,7 +447,7 @@ func (e *SignalEngine) recognizeBuy1(symbol string, in *chanlun.SignalInput) {
 		return
 	}
 
-	anchorKey := fmt.Sprintf("%s|%s|BUY_1|div_%d", symbol, types.LevelL1, div.ExitEnd)
+	anchorKey := fmt.Sprintf("%s|%s|BUY_1|div_%d", symbol, in.Level, div.ExitEnd)
 	if _, exists := e.anchorIndex[anchorKey]; exists {
 		return
 	}
@@ -454,7 +458,7 @@ func (e *SignalEngine) recognizeBuy1(symbol string, in *chanlun.SignalInput) {
 		Symbol:      symbol,
 		TS:          now,
 		Type:        types.SignalBuy1,
-		Level:       types.LevelL1,
+		Level:       in.Level,
 		Price:       div.ExitPrice,
 		State:       types.SignalCandidate,
 		Provisional: true,
@@ -508,7 +512,7 @@ func (e *SignalEngine) recognizeSell1(symbol string, in *chanlun.SignalInput) {
 		return
 	}
 
-	anchorKey := fmt.Sprintf("%s|%s|SELL_1|div_%d", symbol, types.LevelL1, div.ExitEnd)
+	anchorKey := fmt.Sprintf("%s|%s|SELL_1|div_%d", symbol, in.Level, div.ExitEnd)
 	if _, exists := e.anchorIndex[anchorKey]; exists {
 		return
 	}
@@ -519,7 +523,7 @@ func (e *SignalEngine) recognizeSell1(symbol string, in *chanlun.SignalInput) {
 		Symbol:      symbol,
 		TS:          now,
 		Type:        types.SignalSell1,
-		Level:       types.LevelL1,
+		Level:       in.Level,
 		Price:       div.ExitPrice,
 		State:       types.SignalCandidate,
 		Provisional: true,
@@ -573,7 +577,7 @@ func (e *SignalEngine) recognizeBuy2(symbol string, in *chanlun.SignalInput) {
 		return
 	}
 
-	anchorKey := fmt.Sprintf("%s|%s|BUY_2|dep_%s", symbol, types.LevelL1, buy1.SignalID)
+	anchorKey := fmt.Sprintf("%s|%s|BUY_2|dep_%s", symbol, in.Level, buy1.SignalID)
 	if _, exists := e.anchorIndex[anchorKey]; exists {
 		return
 	}
@@ -590,7 +594,7 @@ func (e *SignalEngine) recognizeBuy2(symbol string, in *chanlun.SignalInput) {
 		Symbol:      symbol,
 		TS:          now,
 		Type:        types.SignalBuy2,
-		Level:       types.LevelL1,
+		Level:       in.Level,
 		Price:       pullback.EndPrice,
 		State:       types.SignalCandidate,
 		Provisional: true,
@@ -640,7 +644,7 @@ func (e *SignalEngine) recognizeSell2(symbol string, in *chanlun.SignalInput) {
 		return
 	}
 
-	anchorKey := fmt.Sprintf("%s|%s|SELL_2|dep_%s", symbol, types.LevelL1, sell1.SignalID)
+	anchorKey := fmt.Sprintf("%s|%s|SELL_2|dep_%s", symbol, in.Level, sell1.SignalID)
 	if _, exists := e.anchorIndex[anchorKey]; exists {
 		return
 	}
@@ -657,7 +661,7 @@ func (e *SignalEngine) recognizeSell2(symbol string, in *chanlun.SignalInput) {
 		Symbol:      symbol,
 		TS:          now,
 		Type:        types.SignalSell2,
-		Level:       types.LevelL1,
+		Level:       in.Level,
 		Price:       pullback.EndPrice,
 		State:       types.SignalCandidate,
 		Provisional: true,
@@ -701,9 +705,9 @@ func (e *SignalEngine) recognizeBuy3(symbol string, in *chanlun.SignalInput) {
 			continue
 		}
 		if pullback.Low <= pz.ZG {
-				continue // 回抽跌回中枢（不满足三买条件）
-			}
-		anchorKey := fmt.Sprintf("%s|%s|BUY_3|pz_%d_pb_%d", symbol, types.LevelL1, pz.Index, pullback.Index)
+			continue // 回抽跌回中枢（不满足三买条件）
+		}
+		anchorKey := fmt.Sprintf("%s|%s|BUY_3|pz_%d_pb_%d", symbol, in.Level, pz.Index, pullback.Index)
 		if _, exists := e.anchorIndex[anchorKey]; exists {
 			continue
 		}
@@ -714,7 +718,7 @@ func (e *SignalEngine) recognizeBuy3(symbol string, in *chanlun.SignalInput) {
 			Symbol:      symbol,
 			TS:          now,
 			Type:        types.SignalBuy3,
-			Level:       types.LevelL1,
+			Level:       in.Level,
 			Price:       pullback.EndPrice,
 			State:       types.SignalCandidate,
 			Provisional: true,
@@ -759,9 +763,9 @@ func (e *SignalEngine) recognizeSell3(symbol string, in *chanlun.SignalInput) {
 			continue
 		}
 		if pullback.High >= pz.ZD {
-				continue // 回抽涨回中枢（不满足三卖条件）
-			}
-		anchorKey := fmt.Sprintf("%s|%s|SELL_3|pz_%d_pb_%d", symbol, types.LevelL1, pz.Index, pullback.Index)
+			continue // 回抽涨回中枢（不满足三卖条件）
+		}
+		anchorKey := fmt.Sprintf("%s|%s|SELL_3|pz_%d_pb_%d", symbol, in.Level, pz.Index, pullback.Index)
 		if _, exists := e.anchorIndex[anchorKey]; exists {
 			continue
 		}
@@ -772,7 +776,7 @@ func (e *SignalEngine) recognizeSell3(symbol string, in *chanlun.SignalInput) {
 			Symbol:      symbol,
 			TS:          now,
 			Type:        types.SignalSell3,
-			Level:       types.LevelL1,
+			Level:       in.Level,
 			Price:       pullback.EndPrice,
 			State:       types.SignalCandidate,
 			Provisional: true,

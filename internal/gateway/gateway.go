@@ -23,7 +23,6 @@ import (
 
 	"trade/internal/config"
 	"trade/internal/eventbus"
-	"trade/internal/levels"
 	"trade/internal/log"
 	"trade/internal/signal"
 	"trade/internal/structure"
@@ -41,7 +40,6 @@ type Gateway struct {
 
 	signalEngine  *signal.SignalEngine
 	structureTree *structure.Tree
-	levelBuilder  *levels.LevelBuilder
 
 	rdb    *redis.Client
 	rdbCtx context.Context
@@ -56,14 +54,13 @@ type Gateway struct {
 //
 // 订阅总线事件并将信号/共振写入 Redis Stream（XADD）。
 // 同时提供 REST 接口供外部查询当前状态快照。
-func New(cfg config.Config, bus *eventbus.GenericBus, signalEngine *signal.SignalEngine, structureTree *structure.Tree, levelBuilder *levels.LevelBuilder) *Gateway {
+func New(cfg config.Config, bus *eventbus.GenericBus, signalEngine *signal.SignalEngine, structureTree *structure.Tree) *Gateway {
 	g := &Gateway{
 		cfg:           cfg,
 		bus:           bus,
 		logger:        log.Component("m8.gateway"),
 		signalEngine:  signalEngine,
 		structureTree: structureTree,
-		levelBuilder:  levelBuilder,
 		rdbCtx:        context.Background(),
 	}
 
@@ -359,13 +356,6 @@ func (g *Gateway) handleLevels(c *gin.Context) {
 			"pivotZones":    len(state.Confirmed.PivotZones),
 			"trendPatterns": len(state.Confirmed.TrendPatterns),
 			"inSync":        state.InSync,
-		}
-
-		// 附加 LevelTimeHint（PRD §6.3）
-		if g.levelBuilder != nil {
-			if hint := g.levelBuilder.GetTimeHint(symbol, level); hint != nil {
-				levelInfo["timeHint"] = hint
-			}
 		}
 
 		result[level.String()] = levelInfo

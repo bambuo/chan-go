@@ -36,8 +36,8 @@ type TrendPatternConfig struct {
 // trendPatternState 走势类型状态。
 type trendPatternState struct {
 	mu           sync.Mutex
-	strokes      []*stroke    // 笔列表（笔中枢模式）
-	segments     []*segment   // 线段列表（线段中枢模式）
+	strokes      []*stroke  // 笔列表（笔中枢模式）
+	segments     []*segment // 线段列表（线段中枢模式）
 	pivotZones   []*pivotZone
 	patterns     []*trendPattern
 	processedIdx int
@@ -179,42 +179,129 @@ func (zp *TrendPatternProcessor) getState(symbol string) *trendPatternState {
 	return s
 }
 
-// classify 基于当前中枢列表执行走势类型分类（PRD §6.1 + 走势类型分类算法.md）。
+// classify 增量更新走势类型分类（只处理最后一个未完成走势 + 新中枢）。
 //
-// 走势结束判定（PRD R1）：背驰出现 或 被反向走势破坏，二者先发生者。
-// 反向破坏 = 次级别出现一个完整的反向走势类型（≥1 反向中枢 + 有效突破）。
+// 核心原则（缠论）：已完成的走势固定不变，只有当前走势会被新中枢推进或破坏。
 //
-// 分组规则：
-//   - 一组互不重叠的同向中枢构成一个走势类型。
-//   - 每当中枢方向变化或重叠时，结束当前走势、开始新的走势。
-//   - 当前分组（最后一组）暂不标记 completed，等待后续确认或反向破坏。
+// 四种情况：
+//  1. 无任何走势 → 全量构建
+//  2. 无新中枢 → 不动
+//  3. 最后一个走势已被背驰确认完成 → 新中枢从零开始构建新走势
+//  4. 最后一个走势未完成 → 带着它的老中枢 + 新中枢一起重新评估
+//
+// "重新评估"的含义：
+//   - 新中枢延续同一方向 → 当前走势延伸
+//   - 方向变化/重叠/衰竭 → 当前走势完成（reverseBreak），新中枢另起走势
 func (st *trendPatternState) classify() {
 	if len(st.pivotZones) == 0 {
 		st.patterns = nil
 		return
 	}
 
-	// 全量重算：从已有中枢重建分组
-	type group struct {
-		zones []*pivotZone
-		dir   types.ChanDirection
+	// ---------- 情况1：首次或回溯后清空 → 全量构建 ----------
+	if len(st.patterns) == 0 {
+		groups := groupPivotZones(st.pivotZones)
+		st.patterns = nil
+		for gi, g := range groups {
+			isLast := gi == len(groups)-1
+			p := st.buildPattern(g.zones)
+			if !isLast {
+				p.Completed = true
+				p.EndReason = "reverseBreak"
+			}
+			st.patterns = append(st.patterns, p)
+		}
+		st.processedIdx = len(st.pivotZones)
+		return
 	}
-	var groups []group
 
-	current := group{zones: []*pivotZone{st.pivotZones[0]}, dir: st.pivotZones[0].Direction}
+	// ---------- 情况2：无新中枢 → 不动 ----------
+	if st.processedIdx >= len(st.pivotZones) {
+		return
+	}
 
-	for i := 1; i < len(st.pivotZones); i++ {
-		prev := st.pivotZones[i-1]
-		curr := st.pivotZones[i]
+	lastPattern := st.patterns[len(st.patterns)-1]
+
+	// ---------- 情况3：最后一个走势已被背驰确认完成 → 新中枢独立建走势 ----------
+	if lastPattern.Completed {
+		newZones := st.pivotZones[st.processedIdx:]
+		if len(newZones) == 0 {
+			return
+		}
+		groups := groupPivotZones(newZones)
+		for _, g := range groups {
+			p := st.buildPattern(g.zones)
+			// 所有组都是新的，只有最后一组是当前走势
+			// 但此处我们无法判断后续是否还有新中枢，故全标记为未完成
+			// （后续 classify 会用情况4继续推进）
+			st.patterns = append(st.patterns, p)
+		}
+		st.processedIdx = len(st.pivotZones)
+		return
+	}
+
+	// ---------- 情况4：最后一个走势未完成 → 带老中枢 + 新中枢一起重新评估 ----------
+	// 从最后一个走势的第一个中枢开始，连同新中枢重新分组
+	reEvalStart := 0
+	if len(lastPattern.PivotZoneIDs) > 0 {
+		reEvalStart = lastPattern.PivotZoneIDs[0]
+	}
+	// 保护：reEvalStart 不能越界
+	if reEvalStart >= len(st.pivotZones) {
+		reEvalStart = 0
+	}
+
+	// 删除最后一个走势（将被重新评估替换）
+	st.patterns = st.patterns[:len(st.patterns)-1]
+
+	// 对影响区域重新分组
+	affectedZones := st.pivotZones[reEvalStart:]
+	groups := groupPivotZones(affectedZones)
+
+	for gi, g := range groups {
+		isLast := gi == len(groups)-1
+		p := st.buildPattern(g.zones)
+		if !isLast {
+			// 被后续反向走势破坏 → 完成
+			p.Completed = true
+			p.EndReason = "reverseBreak"
+		}
+		st.patterns = append(st.patterns, p)
+	}
+	st.processedIdx = len(st.pivotZones)
+}
+
+// zoneGroup 中枢分组（内部类型）。
+type zoneGroup struct {
+	zones []*pivotZone
+	dir   types.ChanDirection
+}
+
+// groupPivotZones 将中枢列表按方向/重叠/单调性分组。
+//
+// 分组规则（对应缠论原文第72/78课）：
+//   - 一组互不重叠的同向中枢构成一个走势类型。
+//   - 每当中枢方向变化或重叠时，结束当前走势、开始新的走势。
+//   - 同向不重叠但单调性衰竭（上涨不创新高、下跌不创新低）也结束走势。
+func groupPivotZones(zones []*pivotZone) []zoneGroup {
+	if len(zones) == 0 {
+		return nil
+	}
+	var groups []zoneGroup
+	current := zoneGroup{zones: []*pivotZone{zones[0]}, dir: zones[0].Direction}
+
+	for i := 1; i < len(zones); i++ {
+		prev := zones[i-1]
+		curr := zones[i]
 
 		// 方向变化或重叠 → 新走势
 		if pivotZonesOverlap(prev, curr) || curr.Direction != prev.Direction {
 			groups = append(groups, current)
-			current = group{zones: []*pivotZone{curr}, dir: curr.Direction}
+			current = zoneGroup{zones: []*pivotZone{curr}, dir: curr.Direction}
 			continue
 		}
 
-		// 同向不重叠时，还需校验方向单调性（第72课）：
+		// 同向不重叠时，校验方向单调性（第72课）：
 		//   上涨趋势：中枢逐次抬高（新 ZD > 旧 ZG）
 		//   下跌趋势：中枢逐次降低（新 ZG < 旧 ZD）
 		// 不满足单调性说明走势已衰竭，应分属不同走势类型。
@@ -226,30 +313,13 @@ func (st *trendPatternState) classify() {
 		}
 		if !monotonic {
 			groups = append(groups, current)
-			current = group{zones: []*pivotZone{curr}, dir: curr.Direction}
+			current = zoneGroup{zones: []*pivotZone{curr}, dir: curr.Direction}
 		} else {
 			current.zones = append(current.zones, curr)
 		}
 	}
-	// 最后一组（当前正在进行的走势）暂不标记完成
 	groups = append(groups, current)
-
-	// 转换为 trendPattern，标记完成状态
-	st.patterns = nil
-	for gi, g := range groups {
-		isLast := gi == len(groups)-1
-		p := st.buildPattern(g.zones)
-		if !isLast {
-			// 非最后一组：走势已被后续反向走势破坏 → 标记为 completed
-			p.Completed = true
-			p.EndReason = "reverseBreak"
-		} else {
-			// 最后一组：当前走势，暂不标记完成
-			p.Completed = false
-			p.EndReason = ""
-		}
-		st.patterns = append(st.patterns, p)
-	}
+	return groups
 }
 
 // buildPattern 从中枢组创建一个走势类型。

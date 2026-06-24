@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"trade/internal/chanlun"
 	"trade/internal/config"
 	"trade/internal/eventbus"
 	"trade/internal/gateway"
@@ -21,7 +20,6 @@ import (
 	signals "trade/internal/signal"
 	"trade/internal/snapshot"
 	"trade/internal/state"
-	"trade/internal/strucdump"
 	"trade/internal/structure"
 	"trade/internal/types"
 )
@@ -37,14 +35,9 @@ type App struct {
 	appState *state.Store         // M7 状态存储
 	snapMgr  *snapshot.Manager    // M0 快照层
 
-	// === M2 缠论核心 ===
-	pipeline *chanlun.Pipeline // symbol 级处理管道
-	m3Bridge *chanlun.M3Bridge // M2 → M3 桥接器
-
 	// === 模块 ===
 	ingestG   *ingest.IngestGateway      // M1 输入网关
 	tree      *structure.Tree            // M3 结构树
-	lvlBldr   *levels.LevelBuilder       // M4 递归级别
 	sigEngine *signals.SignalEngine      // M5 信号引擎
 	resEngine *resonance.ResonanceEngine // M6 共振引擎
 	gatewayS  *gateway.Gateway           // M8 输出网关
@@ -88,34 +81,17 @@ func New(cfg config.Config) (*App, error) {
 
 	// === M10 Metrics（包级单例 observability.M） ===
 
-	// === M2 缠论核心 Pipeline ===
-	pivotMode := types.PivotModeStroke
-	if cfg.PivotZoneMode == "segment" {
-		pivotMode = types.PivotModeSegment
-	}
-	pipeline := chanlun.NewPipeline(chanlun.PipelineConfig{PivotZoneMode: pivotMode})
-
 	// === M3 结构树 ===
 	tree := structure.New(gBus)
-
-	// === M2 → M3 桥接器 ===
-	m3Bridge := chanlun.NewM3Bridge(pipeline, tree)
-
-	// 可选：挂载结构调试输出器
-	if cfg.DebugStructureDir != "" {
-		debugWriter := strucdump.NewWriter(cfg.DebugStructureDir)
-		m3Bridge.WithDebugWriter(debugWriter)
-		logger.Info("缠论结构调试输出已启用", "dir", cfg.DebugStructureDir)
-	}
-
-	// === M4 递归级别 ===
-	lvlBldr := levels.New(gBus, tree)
 
 	// === M5 信号引擎 ===
 	sigEngine := signals.New(gBus)
 
-	// === 连接 M3Bridge → SignalEngine（PRD §4 架构图 M2→M3→M5 信号流）===
-	m3Bridge.WithSignalSink(sigEngine)
+	// === M2 + M3 + M4 层级独立运行器 ===
+	l1Input := make(chan *types.Kline, 4096)
+	l1Runner := levels.NewLevelRunner(types.LevelL1, "", l1Input)
+	l1Runner.WithSignalSink(sigEngine)
+	go l1Runner.Run(context.Background())
 
 	// === M6 共振引擎 ===
 	resEngine := resonance.New(gBus, tree)
@@ -131,29 +107,15 @@ func New(cfg config.Config) (*App, error) {
 	}, gBus)
 
 	// === M8 输出网关 ===
-	gatewayS := gateway.New(cfg, gBus, sigEngine, tree, lvlBldr)
+	gatewayS := gateway.New(cfg, gBus, sigEngine, tree)
 
-	// === 订阅 M1 事件 → M2 Pipeline → M3 结构树 ===
-	// 订阅 M1 K 线事件 → M2 Pipeline → M3 结构树
+	// === 订阅 M1 K 线事件 → L1 LevelRunner ===
 	gBus.Subscribe(types.EventKlineReceived, func(evt types.Event) {
 		payload, ok := evt.Payload.(types.KlineReceivedPayload)
 		if !ok || payload.Kline == nil {
 			return
 		}
-		committed, versionID, err := m3Bridge.OnKline(payload.Kline)
-		if err != nil {
-			logger.Error("M3 桥接处理失败",
-				"symbol", evt.Symbol,
-				"error", err,
-			)
-			return
-		}
-		if committed {
-			logger.Debug("M3 版本已提交",
-				"symbol", evt.Symbol,
-				"versionId", versionID,
-			)
-		}
+		l1Input <- payload.Kline
 	})
 
 	snapshotApp := &App{
@@ -163,11 +125,8 @@ func New(cfg config.Config) (*App, error) {
 		gBus:      gBus,
 		appState:  appState,
 		snapMgr:   snapMgr,
-		pipeline:  pipeline,
-		m3Bridge:  m3Bridge,
 		ingestG:   ingestG,
 		tree:      tree,
-		lvlBldr:   lvlBldr,
 		sigEngine: sigEngine,
 		resEngine: resEngine,
 		gatewayS:  gatewayS,

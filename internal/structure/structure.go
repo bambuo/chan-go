@@ -61,7 +61,6 @@ func New(bus *eventbus.GenericBus) *Tree {
 // 返回新版本 ID。
 func (t *Tree) Commit(symbol string, level types.Level, state *types.DualTrackState, diff *types.VersionDiff) string {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	// 初始化 symbol 的级别状态映射
 	if _, ok := t.currentState[symbol]; !ok {
@@ -106,7 +105,9 @@ func (t *Tree) Commit(symbol string, level types.Level, state *types.DualTrackSt
 		}
 	}
 
-	// 发送版本变更事件
+	t.mu.Unlock()
+
+	// 锁外发送版本变更事件，避免 handler 中调用 tree 方法时死锁
 	t.bus.Publish(types.Event{
 		Type:   types.EventStructureVersionChanged,
 		Symbol: symbol,

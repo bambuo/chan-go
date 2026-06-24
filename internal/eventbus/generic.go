@@ -71,6 +71,10 @@ func (b *GenericBus) Publish(event types.Event) {
 	b.mu.RUnlock()
 
 	if !ok || len(handlers) == 0 {
+		b.logger.Info("通用事件无订阅者",
+			"eventType", event.Type,
+			"symbol", event.Symbol,
+		)
 		return
 	}
 
@@ -78,7 +82,7 @@ func (b *GenericBus) Publish(event types.Event) {
 		recoverGeneric(event, handler, id)
 	}
 
-	b.logger.Debug("通用事件已发布",
+	b.logger.Info("通用事件已发布",
 		"eventType", event.Type,
 		"symbol", event.Symbol,
 		"subscriberCount", len(handlers),

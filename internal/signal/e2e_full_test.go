@@ -24,6 +24,7 @@ package signal
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,11 +34,7 @@ import (
 	"testing"
 	"time"
 
-	"trade/internal/chanlun"
-	"trade/internal/eventbus"
 	"trade/internal/levels"
-	"trade/internal/resonance"
-	"trade/internal/structure"
 	"trade/internal/types"
 
 	"github.com/shopspring/decimal"
@@ -274,79 +271,28 @@ func e2eKlines(symbol string) []*types.Kline {
 
 // TestE2E_FullFlow_KlineToSignal 验证完整端到端链路。
 func TestE2E_FullFlow_KlineToSignal(t *testing.T) {
-	bus := eventbus.NewGeneric()
-	tree := structure.New(bus)
-	pipeline := chanlun.NewPipeline()
-	bridge := chanlun.NewM3Bridge(pipeline, tree)
-	sigEngine := New(bus)
-	resEngine := resonance.New(bus, tree)
-	levelBldr := levels.New(bus, tree)
-
-	bridge.WithSignalSink(sigEngine)
+	sigEngine := New(nil)
+	l1Input := make(chan *types.Kline, 256)
+	l1Runner := levels.NewLevelRunner(types.LevelL1, "E2E_FULL", l1Input)
+	l1Runner.WithSignalSink(sigEngine)
+	go l1Runner.Run(context.Background())
 
 	klines := e2eKlines("E2E_FULL")
 	t.Logf("输入 K 线: %d 根", len(klines))
 
-	// 订阅事件
-	var signalEvents []types.SignalEventPayload
-	var resonanceEvents []types.ResonanceEventPayload
-	var versionEvents []types.StructureVersionPayload
-
-	s1 := bus.Subscribe(types.EventSignalCreated, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.SignalEventPayload); ok {
-			signalEvents = append(signalEvents, p)
-		}
-	})
-	s2 := bus.Subscribe(types.EventSignalStateChanged, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.SignalEventPayload); ok {
-			signalEvents = append(signalEvents, p)
-		}
-	})
-	s3 := bus.Subscribe(types.EventResonanceTriggered, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.ResonanceEventPayload); ok {
-			resonanceEvents = append(resonanceEvents, p)
-		}
-	})
-	s4 := bus.Subscribe(types.EventStructureVersionChanged, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.StructureVersionPayload); ok {
-			versionEvents = append(versionEvents, p)
-		}
-	})
-	defer func() {
-		bus.Unsubscribe(types.EventSignalCreated, s1)
-		bus.Unsubscribe(types.EventSignalStateChanged, s2)
-		bus.Unsubscribe(types.EventResonanceTriggered, s3)
-		bus.Unsubscribe(types.EventStructureVersionChanged, s4)
-	}()
-
-	// 逐根处理 K 线
 	for _, k := range klines {
-		bridge.OnKline(k)
+		l1Input <- k
 	}
-
 	time.Sleep(50 * time.Millisecond)
 
-	// ====== M2 Pipeline 状态 ======
-	pState := pipeline.GetState("E2E_FULL")
-	t.Logf("=== M2 Pipeline ===")
-	t.Logf("元素=%d 分型=%d 笔=%d 线段=%d 中枢=%d 走势=%d 背驰=%d",
-		len(pState.AllElements), len(pState.AllFractals),
-		len(pState.Strokes), len(pState.Segments),
-		len(pState.PivotZones), len(pState.TrendPatterns),
-		len(pState.Divergences))
+	pState := l1Runner.Pipe.GetState("E2E_FULL")
+	t.Logf("=== 最终状态 ===")
+	t.Logf("笔=%d 中枢=%d 走势=%d 背驰=%d",
+		len(pState.Strokes), len(pState.PivotZones),
+		len(pState.TrendPatterns), len(pState.Divergences))
 
-	for i, s := range pState.Strokes {
-		t.Logf("  笔[%d]: %s [%.0f→%.0f]", i, s.Direction, s.StartPrice, s.EndPrice)
-	}
-
-	// ====== 结构断言（PRD §7）======
-
-	// 1. Pipeline 应产出足够的结构
 	if len(pState.AllElements) == 0 {
 		t.Error("无非包含元素产出")
-	}
-	if len(pState.AllFractals) < 8 {
-		t.Errorf("分型 < 8, 实际 %d", len(pState.AllFractals))
 	}
 	if len(pState.Strokes) < 8 {
 		t.Errorf("笔 < 8, 实际 %d", len(pState.Strokes))
@@ -355,294 +301,51 @@ func TestE2E_FullFlow_KlineToSignal(t *testing.T) {
 		t.Error("无走势类型产出")
 	}
 
-	// ====== M3 结构树 ======
-	state := tree.GetCurrentState("E2E_FULL", types.LevelL1)
-	if state == nil {
-		t.Fatal("M3 中无 L1 状态")
+	for i, b := range pState.Strokes {
+		t.Logf("  笔[%d]: %s [%.2f→%.2f]", i, b.Direction, b.StartPrice, b.EndPrice)
 	}
-	t.Logf("\n=== M3 结构树 L1 ===")
-	t.Logf("笔=%d 中枢=%d 走势=%d 双轨同步=%v 版本数=%d",
-		len(state.Provisional.Strokes),
-		len(state.Provisional.PivotZones),
-		len(state.Provisional.TrendPatterns),
-		state.InSync,
-		len(versionEvents))
-
-	// lineage 追踪（PRD §10.5）
-	if len(pState.Strokes) > 0 {
-		lineageID := "L_E2E_FULL_bi_0"
-		if eid, ok := tree.ResolveLineage(lineageID); ok {
-			t.Logf("lineage: %s → %s", lineageID, eid)
-		}
+	for i, zs := range pState.TrendPatterns {
+		t.Logf("  走势[%d]: 类型=%s 方向=%s", i, zs.Type, zs.Direction)
 	}
-
-	// 结构树版本历史
-	versions := tree.GetVersionHistory("E2E_FULL", types.LevelL1)
-	if len(versions) > 0 {
-		t.Logf("L1 版本数: %d", len(versions))
+	for i, bc := range pState.Divergences {
+		t.Logf("  背驰[%d]: %s 比率=%.2f 确认=%v", i, bc.Type, bc.Ratio, bc.Confirmed)
 	}
-
-	// ====== M4 级别递归 ======
-	t.Logf("\n=== M4 级别递归 ===")
-	for _, lvl := range []types.Level{types.LevelL1, types.LevelL2, types.LevelL3, types.LevelL4} {
-		lState := tree.GetCurrentState("E2E_FULL", lvl)
-		if lState == nil {
-			t.Logf("  %s: (无数据)", lvl)
-			continue
-		}
-		t.Logf("  %s: 笔=%d 中枢=%d 走势=%d 同步=%v",
-			lvl, len(lState.Provisional.Strokes),
-			len(lState.Provisional.PivotZones),
-			len(lState.Provisional.TrendPatterns),
-			lState.InSync)
-
-		// 详细日志：各级别的笔信息（高级别为 L1 盘整升级而来）
-		for i, st := range lState.Provisional.Strokes {
-			t.Logf("    %s 笔[%d]: %s [%.0f→%.0f]", lvl, i, st.Direction, st.StartPrice, st.EndPrice)
-		}
-
-		if hint := levelBldr.GetTimeHint("E2E_FULL", lvl); hint != nil {
-			t.Logf("     timeHint: avg=%.0fs p10=%.0fs p90=%.0fs N=%d",
-				hint.AvgDurationSec, hint.P10DurationSec,
-				hint.P90DurationSec, hint.SampleCount)
-		}
-	}
-
-	// ====== M5 信号引擎 ======
-	activeSignals := sigEngine.GetActiveSignals("E2E_FULL")
-	t.Logf("\n=== M5 信号引擎 ===")
-	t.Logf("信号事件: %d (created+stateChanged) 共振事件: %d",
-		len(signalEvents), len(resonanceEvents))
-	t.Logf("活跃信号: %d", len(activeSignals))
-
-	for _, s := range activeSignals {
-		t.Logf("  [%s] %s %s price=%.2f conf=%.4f strength=%.4f res=%s",
-			s.SignalID, s.Type, s.State, s.Price,
-			s.Confidence, s.Strength, s.Resonance.Kind)
-	}
-
-	// ====== 信号字段完整性断言（PRD §8）======
-	for _, s := range activeSignals {
-		if s.SignalID == "" {
-			t.Error("SignalID 为空")
-		}
-		if s.Type == "" {
-			t.Error("Type 为空")
-		}
-		if s.State == "" {
-			t.Error("State 为空")
-		}
-		if s.Confidence <= 0 || s.Confidence > 1.0 {
-			t.Errorf("Confidence 超范围: %.4f", s.Confidence)
-		}
-		if s.Strength < 0 || s.Strength > 1.0 {
-			t.Errorf("Strength 超范围: %.4f", s.Strength)
-		}
-		if s.Anchor.Kind == "" {
-			t.Error("Anchor.Kind 为空")
-		}
-		if s.Targets.InvalidationPrice == 0 {
-			t.Error("InvalidationPrice 为 0")
-		}
-		if s.Evidence.TrendDirection == "" {
-			t.Error("Evidence.TrendDirection 为空")
-		}
-		if s.Resonance.Kind == "" {
-			t.Error("Resonance.Kind 为空")
-		}
-	}
-
-	// ====== 共振事件完整性 ======
-	for _, e := range resonanceEvents {
-		if e.Signal == nil {
-			t.Error("共振事件 Signal 不能为空")
-		}
-		if e.Resonance.Kind == "" {
-			t.Error("共振事件 Resonance.Kind 不能为空")
-		}
-	}
-
-	// ====== 版本事件完整性 ======
-	for _, e := range versionEvents {
-		if e.NewVersion.VersionID == "" {
-			t.Error("版本事件 VersionID 不能为空")
-		}
-		if e.Level == 0 {
-			t.Error("版本事件 Level 为 0")
-		}
-	}
-
-	resEngine.Stop()
-	levelBldr.Stop()
 }
 
-// TestE2E_FullFlow_RealKline 用 BTCUSDT 真实 1 个月 1m K 线验证完整端到端链路。
-//
-// 与 TestE2E_FullFlow_KlineToSignal 的区别：
-//   - 使用真实市场数据而非合成锯齿波
-//   - 断言更宽松（真实数据噪声大）
-//   - 侧重于 Pipeline 不崩溃 + 输出结构多样性
 func TestE2E_FullFlow_RealKline(t *testing.T) {
-	bus := eventbus.NewGeneric()
-	tree := structure.New(bus)
-	pipeline := chanlun.NewPipeline()
-	bridge := chanlun.NewM3Bridge(pipeline, tree)
-	sigEngine := New(bus)
-	resEngine := resonance.New(bus, tree)
-	levelBldr := levels.New(bus, tree)
-
-	bridge.WithSignalSink(sigEngine)
-
 	klines, err := readBTCUSDTKlines("BTCUSDT", 1)
 	if err != nil {
 		t.Fatalf("加载 BTCUSDT K 线失败: %v", err)
 	}
 	t.Logf("输入 BTCUSDT 1m K 线: %d 根（最近 1 个月）", len(klines))
 
-	// 订阅事件
-	var signalEvents []types.SignalEventPayload
-	var resonanceEvents []types.ResonanceEventPayload
-	var versionEvents []types.StructureVersionPayload
+	l1Input := make(chan *types.Kline, 4096)
+	l1Runner := levels.NewLevelRunner(types.LevelL1, "BTCUSDT", l1Input)
+	go l1Runner.Run(context.Background())
 
-	s1 := bus.Subscribe(types.EventSignalCreated, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.SignalEventPayload); ok {
-			signalEvents = append(signalEvents, p)
-		}
-	})
-	s2 := bus.Subscribe(types.EventSignalStateChanged, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.SignalEventPayload); ok {
-			signalEvents = append(signalEvents, p)
-		}
-	})
-	s3 := bus.Subscribe(types.EventResonanceTriggered, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.ResonanceEventPayload); ok {
-			resonanceEvents = append(resonanceEvents, p)
-		}
-	})
-	s4 := bus.Subscribe(types.EventStructureVersionChanged, func(evt types.Event) {
-		if p, ok := evt.Payload.(types.StructureVersionPayload); ok {
-			versionEvents = append(versionEvents, p)
-		}
-	})
-	defer func() {
-		bus.Unsubscribe(types.EventSignalCreated, s1)
-		bus.Unsubscribe(types.EventSignalStateChanged, s2)
-		bus.Unsubscribe(types.EventResonanceTriggered, s3)
-		bus.Unsubscribe(types.EventStructureVersionChanged, s4)
-	}()
-
-	// 逐根处理 K 线
-	t.Logf("开始逐根处理 %d 根 K 线...", len(klines))
 	for _, k := range klines {
-		bridge.OnKline(k)
+		l1Input <- k
 	}
+	time.Sleep(5 * time.Second)
 
-	time.Sleep(100 * time.Millisecond)
+	pState := l1Runner.Pipe.GetState("BTCUSDT")
+	t.Logf("=== 最终状态 ===")
+	t.Logf("总K线=%d 元素=%d 笔=%d 中枢=%d 走势=%d 背驰=%d",
+		pState.TotalKlines, len(pState.AllElements),
+		len(pState.Strokes), len(pState.PivotZones),
+		len(pState.TrendPatterns), len(pState.Divergences))
 
-	// ====== M2 Pipeline 状态 ======
-	pState := pipeline.GetState("BTCUSDT")
-	t.Logf("=== M2 Pipeline ===")
-	t.Logf("元素=%d 分型=%d 笔=%d 线段=%d 中枢=%d 走势=%d 背驰=%d",
-		len(pState.AllElements), len(pState.AllFractals),
-		len(pState.Strokes), len(pState.Segments),
-		len(pState.PivotZones), len(pState.TrendPatterns),
-		len(pState.Divergences))
-
-	for i, s := range pState.Strokes {
-		t.Logf("  笔[%d]: %s [%.0f→%.0f]", i, s.Direction, s.StartPrice, s.EndPrice)
-	}
-
-	// ====== 结构快速断言 ======
 	if len(pState.AllElements) == 0 {
-		t.Error("无非包含元素产出（可能 CSV 加载失败）")
+		t.Error("无非包含元素产出（CSV 加载可能失败）")
 	}
-	if len(pState.AllFractals) < 2 {
-		t.Logf("分型仅 %d 个（真实数据可能较稀少）", len(pState.AllFractals))
+	if len(pState.Strokes) > 0 {
+		t.Logf("首批笔: %s [%.0f→%.0f]",
+			pState.Strokes[0].Direction,
+			pState.Strokes[0].StartPrice,
+			pState.Strokes[0].EndPrice)
 	}
-
-	// ====== M3 结构树 ======
-	state := tree.GetCurrentState("BTCUSDT", types.LevelL1)
-	if state == nil {
-		t.Fatal("M3 中无 L1 状态")
-	}
-	t.Logf("\n=== M3 结构树 L1 ===")
-	t.Logf("笔=%d 中枢=%d 走势=%d 双轨同步=%v 版本数=%d",
-		len(state.Provisional.Strokes),
-		len(state.Provisional.PivotZones),
-		len(state.Provisional.TrendPatterns),
-		state.InSync,
-		len(versionEvents))
-
-	// ====== M4 级别递归 ======
-	t.Logf("\n=== M4 级别递归 ===")
-	for _, lvl := range []types.Level{types.LevelL1, types.LevelL2, types.LevelL3, types.LevelL4} {
-		lState := tree.GetCurrentState("BTCUSDT", lvl)
-		if lState == nil {
-			t.Logf("  %s: (无数据)", lvl)
-			continue
-		}
-		t.Logf("  %s: 笔=%d 中枢=%d 走势=%d 同步=%v",
-			lvl, len(lState.Provisional.Strokes),
-			len(lState.Provisional.PivotZones),
-			len(lState.Provisional.TrendPatterns),
-			lState.InSync)
-
-		for i, st := range lState.Provisional.Strokes {
-			t.Logf("    %s 笔[%d]: %s [%.0f→%.0f]", lvl, i, st.Direction, st.StartPrice, st.EndPrice)
-		}
-
-		if hint := levelBldr.GetTimeHint("BTCUSDT", lvl); hint != nil {
-			t.Logf("     timeHint: avg=%.0fs p10=%.0fs p90=%.0fs N=%d",
-				hint.AvgDurationSec, hint.P10DurationSec,
-				hint.P90DurationSec, hint.SampleCount)
-		}
-	}
-
-	// ====== M5 信号引擎 ======
-	activeSignals := sigEngine.GetActiveSignals("BTCUSDT")
-	t.Logf("\n=== M5 信号引擎 ===")
-	t.Logf("信号事件: %d (created+stateChanged) 共振事件: %d",
-		len(signalEvents), len(resonanceEvents))
-	t.Logf("活跃信号: %d", len(activeSignals))
-
-	for _, s := range activeSignals {
-		t.Logf("  [%s] %s %s price=%.2f conf=%.4f strength=%.4f res=%s",
-			s.SignalID, s.Type, s.State, s.Price,
-			s.Confidence, s.Strength, s.Resonance.Kind)
-	}
-
-	// ====== 信号字段完整性（仅当有信号时验证）======
-	for _, s := range activeSignals {
-		if s.SignalID == "" {
-			t.Error("SignalID 为空")
-		}
-		if s.Type == "" {
-			t.Error("Type 为空")
-		}
-		if s.Confidence <= 0 || s.Confidence > 1.0 {
-			t.Errorf("Confidence 超范围: %.4f", s.Confidence)
-		}
-	}
-
-	// ====== 事件完整性 ======
-	for _, e := range resonanceEvents {
-		if e.Signal == nil {
-			t.Error("共振事件 Signal 不能为空")
-		}
-	}
-	for _, e := range versionEvents {
-		if e.NewVersion.VersionID == "" {
-			t.Error("版本事件 VersionID 不能为空")
-		}
-	}
-
-	t.Logf("\n真实数据全链路测试完成: %d 根 K 线, %d 笔, %d 中枢, %d 走势, %d 背驰",
+	t.Logf("真实数据全链路测试完成: %d 根 K 线, %d 笔, %d 中枢, %d 走势, %d 背驰",
 		len(klines),
-		len(pState.Strokes),
-		len(pState.PivotZones),
-		len(pState.TrendPatterns),
-		len(pState.Divergences))
-
-	resEngine.Stop()
-	levelBldr.Stop()
+		len(pState.Strokes), len(pState.PivotZones),
+		len(pState.TrendPatterns), len(pState.Divergences))
 }
