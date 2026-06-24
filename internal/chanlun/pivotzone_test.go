@@ -160,3 +160,139 @@ func TestZhongShu_NotStartFromEdge(t *testing.T) {
 		zss[0].ZG, zss[0].ZD, zss[0].SegmentsCount,
 		zss[0].StartStrokeIdx, zss[0].EndStrokeIdx)
 }
+
+// ====== 中枢完成判定（第三类买卖点确认）测试 ======
+
+// TestZhongShu_ExitNoPullback 验证：构件离开中枢后无回抽构件 → 中枢未完成。
+// 中枢 [10,20]，bi3 完全在上方（low=22 > ZG=20），无 bi4 → Completed=false。
+func TestZhongShu_ExitNoPullback(t *testing.T) {
+	bis := []*stroke{
+		mkStroke(0, 10, 5, 20, 15, types.DirectionUp),   // [5, 20]
+		mkStroke(1, 20, 15, 14, 10, types.DirectionDown), // [10, 20]
+		mkStroke(2, 14, 10, 25, 18, types.DirectionUp),   // [10, 25]
+		// 中枢 ZG=min(20,20,25)=20, ZD=max(5,10,10)=10 → [10,20]
+		// bi3 完全在上方：low > 20
+		{Index: 3, Direction: types.DirectionUp, StartPrice: 24, EndPrice: 38,
+			High: 40, Low: 22, Confirmed: true}, // [22, 40]
+	}
+
+	zp := NewPivotZoneProcessor()
+	zss := zp.Process("TEST", bis)
+
+	if len(zss) != 1 {
+		t.Fatalf("期望 1 个中枢, 实际 %d", len(zss))
+	}
+	if zss[0].Completed {
+		t.Error("无回抽构件时中枢不应标记为已完成")
+	}
+	if zss[0].SegmentsCount != 3 {
+		t.Errorf("离开构件不应计入延伸, 段数期望 3, 实际 %d", zss[0].SegmentsCount)
+	}
+	t.Logf("中枢: ZG=%.2f ZD=%.2f 段数=%d Completed=%v",
+		zss[0].ZG, zss[0].ZD, zss[0].SegmentsCount, zss[0].Completed)
+}
+
+// TestZhongShu_ExitAndPullbackCompletes 验证：离开 + 回抽不回中枢 → 确认完成。
+// 中枢 [10,20]，bi3 完全在上方（low=22 > 20），bi4 回抽也不回到中枢（low=22 > 20）。
+func TestZhongShu_ExitAndPullbackCompletes(t *testing.T) {
+	bis := []*stroke{
+		mkStroke(0, 10, 5, 20, 15, types.DirectionUp),    // [5, 20]
+		mkStroke(1, 20, 15, 14, 10, types.DirectionDown),  // [10, 20]
+		mkStroke(2, 14, 10, 25, 18, types.DirectionUp),    // [10, 25] 中枢 [10,20]
+		// bi3 完全在上方
+		{Index: 3, Direction: types.DirectionUp, StartPrice: 24, EndPrice: 38,
+			High: 40, Low: 22, Confirmed: true}, // [22, 40]
+		// bi4 回抽也不回到中枢（仍在上方）
+		{Index: 4, Direction: types.DirectionDown, StartPrice: 30, EndPrice: 23,
+			High: 32, Low: 22, Confirmed: true}, // [22, 32]
+	}
+
+	zp := NewPivotZoneProcessor()
+	zss := zp.Process("TEST", bis)
+
+	if len(zss) != 1 {
+		t.Fatalf("期望 1 个中枢, 实际 %d", len(zss))
+	}
+	if !zss[0].Completed {
+		t.Error("离开后回抽不回中枢应标记为 Completed=true")
+	}
+	t.Logf("中枢: ZG=%.2f ZD=%.2f 段数=%d Completed=%v",
+		zss[0].ZG, zss[0].ZD, zss[0].SegmentsCount, zss[0].Completed)
+}
+
+// TestZhongShu_ExitAndPullbackReenters 验证：离开 + 回抽回到中枢 → 继续延伸。
+// 中枢 [10,20]，bi3 完全在上方（low=22 > 20），bi4 回抽回到中枢（low=12 < 20）。
+func TestZhongShu_ExitAndPullbackReenters(t *testing.T) {
+	bis := []*stroke{
+		mkStroke(0, 10, 5, 18, 12, types.DirectionUp),    // [5, 18]
+		mkStroke(1, 18, 12, 10, 5, types.DirectionDown),   // [5, 18]
+		mkStroke(2, 10, 5, 25, 20, types.DirectionUp),     // [5, 25] 中枢 [5,18]
+		// bi3 完全在上方
+		{Index: 3, Direction: types.DirectionUp, StartPrice: 22, EndPrice: 38,
+			High: 40, Low: 20, Confirmed: true}, // [20, 40] 注意 low=20 = ZG
+	}
+	// 等等，low=20 <= ZG=18? 20 <= 18? NO → exit ✓
+	// 但 20 只是大于 ZG。如果需要更明显就用 low=22。
+
+	// 重新设计：
+	bis = []*stroke{
+		mkStroke(0, 10, 5, 18, 12, types.DirectionUp),    // [5, 18]
+		mkStroke(1, 18, 12, 10, 5, types.DirectionDown),   // [5, 18]
+		mkStroke(2, 10, 5, 25, 20, types.DirectionUp),     // [5, 25] 中枢 [5,18]
+		// bi3 完全在下方（high=3 < ZD=5）
+		{Index: 3, Direction: types.DirectionDown, StartPrice: 8, EndPrice: 2,
+			High: 10, Low: 2, Confirmed: true}, // [2, 10] 注意 low=2 没问题…
+		// 等等 high=10 >= ZD=5? YES → 这实际上是重叠的！(high=10>5, low=2<18)
+	}
+	// 不行，high=10 >= ZD=5 且 low=2 <= ZG=18 → 重叠了。这不是 exit。
+
+	// 我需要 bi3 完全在下方：high < ZD。
+	// bi3: high < 5。
+	bis = []*stroke{
+		mkStroke(0, 10, 5, 18, 12, types.DirectionUp),    // [5, 18]
+		mkStroke(1, 18, 12, 10, 5, types.DirectionDown),   // [5, 18]
+		mkStroke(2, 10, 5, 25, 20, types.DirectionUp),     // [5, 25] 中枢 ZG=18, ZD=5
+		// bi3 完全在下方
+		{Index: 3, Direction: types.DirectionDown, StartPrice: 12, EndPrice: 2,
+			High: 4, Low: 1, Confirmed: true}, // [1, 4] high=4 < ZD=5 → 完全离开
+		// bi4 回抽回到中枢
+		mkStroke(4, 8, 4, 20, 15, types.DirectionUp),      // [4, 20] 回到中枢
+	}
+
+	zp := NewPivotZoneProcessor()
+	zss := zp.Process("TEST", bis)
+
+	if len(zss) != 1 {
+		t.Fatalf("期望 1 个中枢, 实际 %d", len(zss))
+	}
+	if zss[0].Completed {
+		t.Error("回抽回到中枢后中枢不应标记为已完成")
+	}
+	if zss[0].SegmentsCount < 4 {
+		t.Errorf("回抽后延伸段数应 >= 4, 实际 %d", zss[0].SegmentsCount)
+	}
+	t.Logf("中枢: ZG=%.2f ZD=%.2f 段数=%d Completed=%v EndIdx=%d",
+		zss[0].ZG, zss[0].ZD, zss[0].SegmentsCount, zss[0].Completed, zss[0].EndStrokeIdx)
+}
+
+// TestZhongShu_SegmentMode 验证线段中枢模式的基本功能。
+func TestZhongShu_SegmentMode(t *testing.T) {
+	// 用线段构建中枢（段模式）
+	// 段0: [5, 22], 段1: [8, 22], 段2: [8, 25] → 中枢 [8, 22]
+	segs := []*segment{
+		{index: 0, direction: types.DirectionUp, high: 22, low: 5, confirmed: true},
+		{index: 1, direction: types.DirectionDown, high: 22, low: 8, confirmed: true},
+		{index: 2, direction: types.DirectionUp, high: 25, low: 8, confirmed: true},
+	}
+
+	zp := NewPivotZoneProcessor(PivotZoneConfig{Mode: types.PivotModeSegment})
+	zss := zp.ProcessSegments("TEST", segs)
+
+	if len(zss) != 1 {
+		t.Fatalf("段模式期望 1 个中枢, 实际 %d", len(zss))
+	}
+	if zss[0].ZG <= zss[0].ZD {
+		t.Errorf("ZG(%.2f) 应 > ZD(%.2f)", zss[0].ZG, zss[0].ZD)
+	}
+	t.Logf("段中枢: ZG=%.2f ZD=%.2f 段数=%d", zss[0].ZG, zss[0].ZD, zss[0].SegmentsCount)
+}
