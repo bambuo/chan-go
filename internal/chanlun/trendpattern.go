@@ -18,8 +18,8 @@ type trendPattern struct {
 	Type           string              // "trend"(趋势) / "consolidation"(盘整)
 	Direction      types.ChanDirection // 方向
 	PivotZoneIDs   []int               // 包含的中枢索引列表
-	StartStrokeIdx int                 // 起始笔索引
-	EndStrokeIdx   int                 // 结束笔索引
+	StartStrokeIdx int                 // 起始构件索引
+	EndStrokeIdx   int                 // 结束构件索引
 	StartPrice     float64             // 起点价格
 	EndPrice       float64             // 终点价格
 	High           float64             // 区间最高
@@ -28,29 +28,42 @@ type trendPattern struct {
 	EndReason      string              // "divergence"(背驰) / "reverseBreak"(反向破坏)
 }
 
+// TrendPatternConfig 走势类型分类配置。
+type TrendPatternConfig struct {
+	Mode types.PivotZoneMode // 笔中枢或线段中枢
+}
+
 // trendPatternState 走势类型状态。
 type trendPatternState struct {
 	mu           sync.Mutex
-	strokes      []*stroke
+	strokes      []*stroke    // 笔列表（笔中枢模式）
+	segments     []*segment   // 线段列表（线段中枢模式）
 	pivotZones   []*pivotZone
 	patterns     []*trendPattern
 	processedIdx int
+	mode         types.PivotZoneMode // 当前模式
 }
 
 // TrendPatternProcessor 走势类型分类处理器。
 type TrendPatternProcessor struct {
 	states map[string]*trendPatternState
+	config TrendPatternConfig
 	mu     sync.Mutex
 }
 
 // NewTrendPatternProcessor 创建走势分类处理器。
-func NewTrendPatternProcessor() *TrendPatternProcessor {
+func NewTrendPatternProcessor(config ...TrendPatternConfig) *TrendPatternProcessor {
+	mode := types.PivotModeStroke
+	if len(config) > 0 {
+		mode = config[0].Mode
+	}
 	return &TrendPatternProcessor{
 		states: make(map[string]*trendPatternState),
+		config: TrendPatternConfig{Mode: mode},
 	}
 }
 
-// Process 增量处理中枢列表，更新走势类型分类。
+// Process 增量处理中枢列表（笔中枢模式），更新走势类型分类。
 func (zp *TrendPatternProcessor) Process(symbol string, strokes []*stroke, pivotZones []*pivotZone) []*trendPattern {
 	st := zp.getState(symbol)
 	st.mu.Lock()
@@ -58,6 +71,27 @@ func (zp *TrendPatternProcessor) Process(symbol string, strokes []*stroke, pivot
 
 	st.strokes = strokes
 	st.pivotZones = pivotZones
+	st.mode = types.PivotModeStroke
+
+	if len(pivotZones) <= st.processedIdx {
+		return st.patterns
+	}
+
+	st.classify()
+	st.processedIdx = len(pivotZones)
+
+	return st.patterns
+}
+
+// ProcessSegments 增量处理中枢列表（线段中枢模式），更新走势类型分类。
+func (zp *TrendPatternProcessor) ProcessSegments(symbol string, segments []*segment, pivotZones []*pivotZone) []*trendPattern {
+	st := zp.getState(symbol)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.segments = segments
+	st.pivotZones = pivotZones
+	st.mode = types.PivotModeSegment
 
 	if len(pivotZones) <= st.processedIdx {
 		return st.patterns
@@ -217,10 +251,20 @@ func (st *trendPatternState) buildPattern(group []*pivotZone) *trendPattern {
 
 	startStrokeIdx := group[0].StartStrokeIdx
 	endStrokeIdx := group[len(group)-1].EndStrokeIdx
-	startPrice := st.strokes[startStrokeIdx].StartPrice
-	endPrice := st.strokes[endStrokeIdx].EndPrice
-	high := st.strokes[startStrokeIdx].High
-	low := st.strokes[startStrokeIdx].Low
+
+	// 根据当前模式从笔或段查询价格
+	var startPrice, endPrice, high, low float64
+	if st.mode == types.PivotModeStroke {
+		startPrice = st.strokes[startStrokeIdx].StartPrice
+		endPrice = st.strokes[endStrokeIdx].EndPrice
+		high = st.strokes[startStrokeIdx].High
+		low = st.strokes[startStrokeIdx].Low
+	} else {
+		startPrice = st.segments[startStrokeIdx].startPrice
+		endPrice = st.segments[endStrokeIdx].endPrice
+		high = st.segments[startStrokeIdx].high
+		low = st.segments[startStrokeIdx].low
+	}
 	for _, zs := range group {
 		if zs.ZG > high {
 			high = zs.ZG

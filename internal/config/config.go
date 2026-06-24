@@ -27,6 +27,9 @@ type Config struct {
 	SnapshotPeriod int    // 快照周期（秒，默认 300 = 5min）
 	SnapshotRetain int    // 保留最近快照数（默认 24）
 
+	// === 中枢构建模式 ===
+	PivotZoneMode string // "stroke"（笔中枢，默认）或 "segment"（线段中枢）
+
 	// === 调试（strucdump）===
 	DebugStructureDir string // 非空时，每次管道处理后向此目录输出结构 JSON 快照
 }
@@ -48,8 +51,10 @@ func Default() Config {
 		HTTPPort:           8080,
 		OutputStreamPrefix: "chan:signals",
 
-		SnapshotDir:    "data/snapshots",
-		SnapshotPeriod: 300,
-		SnapshotRetain: 24,
+			SnapshotDir:    "data/snapshots",
+			SnapshotPeriod: 300,
+			SnapshotRetain: 24,
+
+			PivotZoneMode: "stroke",
+		}
 	}
-}

@@ -89,7 +89,11 @@ func New(cfg config.Config) (*App, error) {
 	// === M10 Metrics（包级单例 observability.M） ===
 
 	// === M2 缠论核心 Pipeline ===
-	pipeline := chanlun.NewPipeline()
+	pivotMode := types.PivotModeStroke
+	if cfg.PivotZoneMode == "segment" {
+		pivotMode = types.PivotModeSegment
+	}
+	pipeline := chanlun.NewPipeline(chanlun.PipelineConfig{PivotZoneMode: pivotMode})
 
 	// === M3 结构树 ===
 	tree := structure.New(gBus)

@@ -37,33 +37,45 @@ type PipelineOutput struct {
 // 每 symbol 一个独立实例，维护自己的容器-分型状态机。
 type Pipeline struct {
 	mu      sync.Mutex
+	config  PipelineConfig
 	symbols map[string]*symbolState
+}
+
+// PipelineConfig 管道级配置。
+type PipelineConfig struct {
+	PivotZoneMode types.PivotZoneMode // 中枢构建模式（笔中枢/线段中枢）
 }
 
 // symbolState 单个 symbol 的处理状态。
 type symbolState struct {
 	symbol                     string
-	contain                    *ContainProcessor      // K线包含处理器
-	fractal                    *FractalProcessor      // 分型识别处理器
-	stroke                     *StrokeProcessor       // 笔识别处理器
-	segment                    *SegmentProcessor      // 线段划分处理器
-	pivotZone                  *PivotZoneProcessor    // 中枢识别处理器
+	config                     PipelineConfig       // 管道配置
+	contain                    *ContainProcessor    // K线包含处理器
+	fractal                    *FractalProcessor    // 分型识别处理器
+	stroke                     *StrokeProcessor     // 笔识别处理器
+	segment                    *SegmentProcessor    // 线段划分处理器
+	pivotZone                  *PivotZoneProcessor  // 中枢识别处理器
 	trendPattern               *TrendPatternProcessor // 走势类型分类处理器
-	divergence                 *DivergenceProcessor   // 背驰判定处理器
-	totalKlines                int                    // 已处理的原始 K 线总数
-	lastOpenTime               int64                  // 最后处理 K 线的 OpenTime
-	lastCommittedElementN      int                    // 上次提交到 M3 时的非包含元素数
-	lastCommittedFractalN      int                    // 上次提交到 M3 时的已确认分型数
-	lastCommittedStrokeN       int                    // 上次提交到 M3 时的笔数
-	lastCommittedSegN          int                    // 上次提交到 M3 时的线段数
-	lastCommittedPivotZoneN    int                    // 上次提交到 M3 时的中枢数
-	lastCommittedTrendPatternN int                    // 上次提交到 M3 时的走势类型数
-	lastCommittedDivergenceN   int                    // 上次提交到 M3 时的背驰信号数
+	divergence                 *DivergenceProcessor // 背驰判定处理器
+	totalKlines                int                  // 已处理的原始 K 线总数
+	lastOpenTime               int64                // 最后处理 K 线的 OpenTime
+	lastCommittedElementN      int                  // 上次提交到 M3 时的非包含元素数
+	lastCommittedFractalN      int                  // 上次提交到 M3 时的已确认分型数
+	lastCommittedStrokeN       int                  // 上次提交到 M3 时的笔数
+	lastCommittedSegN          int                  // 上次提交到 M3 时的线段数
+	lastCommittedPivotZoneN    int                  // 上次提交到 M3 时的中枢数
+	lastCommittedTrendPatternN int                  // 上次提交到 M3 时的走势类型数
+	lastCommittedDivergenceN   int                  // 上次提交到 M3 时的背驰信号数
 }
 
-// NewPipeline 创建新的管道。
-func NewPipeline() *Pipeline {
+// NewPipeline 创建新的管道（默认笔中枢模式）。
+func NewPipeline(cfg ...PipelineConfig) *Pipeline {
+	mode := types.PivotModeStroke
+	if len(cfg) > 0 {
+		mode = cfg[0].PivotZoneMode
+	}
 	return &Pipeline{
+		config:  PipelineConfig{PivotZoneMode: mode},
 		symbols: make(map[string]*symbolState),
 	}
 }
@@ -76,14 +88,16 @@ func (p *Pipeline) GetOrCreate(symbol string) *symbolState {
 	if s, ok := p.symbols[symbol]; ok {
 		return s
 	}
+	cfg := PipelineConfig{PivotZoneMode: p.config.PivotZoneMode}
 	s := &symbolState{
 		symbol:       symbol,
+		config:       cfg,
 		contain:      NewContainProcessor(),
 		fractal:      NewFractalProcessor(),
 		stroke:       NewStrokeProcessor(),
 		segment:      NewSegmentProcessor(),
-		pivotZone:    NewPivotZoneProcessor(),
-		trendPattern: NewTrendPatternProcessor(),
+		pivotZone:    NewPivotZoneProcessor(PivotZoneConfig{Mode: p.config.PivotZoneMode}),
+		trendPattern: NewTrendPatternProcessor(TrendPatternConfig{Mode: p.config.PivotZoneMode}),
 		divergence:   NewDivergenceProcessor(),
 	}
 	p.symbols[symbol] = s
@@ -220,9 +234,15 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 		newSegments = allSegments[oldSegN:]
 	}
 
-	// 增量中枢识别：用新确认的笔触发中枢状态机
-	if len(newStrokes) > 0 {
-		s.pivotZone.Process(s.symbol, allStrokes)
+	// 增量中枢识别：按模式选择入口
+	if s.config.PivotZoneMode == types.PivotModeSegment {
+		if len(newSegments) > 0 || backtrackFrom >= 0 {
+			s.pivotZone.ProcessSegments(s.symbol, allSegments)
+		}
+	} else {
+		if len(newStrokes) > 0 || backtrackFrom >= 0 {
+			s.pivotZone.Process(s.symbol, allStrokes)
+		}
 	}
 
 	// 获取当前所有中枢
@@ -233,9 +253,13 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 		newPivotZones = allPivotZones[oldPivotZoneN:]
 	}
 
-	// 走势类型分类：基于中枢序列
+	// 走势类型分类：按模式选择入口
 	if len(newPivotZones) > 0 {
-		s.trendPattern.Process(s.symbol, allStrokes, allPivotZones)
+		if s.config.PivotZoneMode == types.PivotModeSegment {
+			s.trendPattern.ProcessSegments(s.symbol, allSegments, allPivotZones)
+		} else {
+			s.trendPattern.Process(s.symbol, allStrokes, allPivotZones)
+		}
 	}
 
 	// 获取所有走势类型
