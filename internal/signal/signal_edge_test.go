@@ -179,7 +179,7 @@ func TestBuy3_Confirmed(t *testing.T) {
 		PivotZones:    pz,
 		TrendPatterns: tp,
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "bottomDivergence", Stroke1Idx: 3, Stroke2Idx: 5, Confirmed: true},
+			{Type: "bottomDivergence", EntryEnd: 3, ExitEnd: 5, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(input2)
@@ -236,7 +236,7 @@ func TestSell3_Confirmed(t *testing.T) {
 		PivotZones:    pz,
 		TrendPatterns: tp,
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "topDivergence", Stroke1Idx: 3, Stroke2Idx: 5, Confirmed: true},
+			{Type: "topDivergence", EntryEnd: 3, ExitEnd: 5, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(input2)
@@ -438,7 +438,7 @@ func TestSell1_Detected_Basic(t *testing.T) {
 			{Type: "trend", Direction: types.DirectionUp, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "topDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 85, Price2: 95, Strength1: 30, Strength2: 15, Ratio: 0.5, Confirmed: true},
+			{Type: "topDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 85, ExitPrice: 95, EntryMACD: 30, ExitMACD: 15, Ratio: 0.5, Confirmed: true},
 		},
 	}
 
@@ -484,7 +484,7 @@ func TestBuy1_Confirmed(t *testing.T) {
 			{Type: "trend", Direction: types.DirectionDown, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "bottomDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 70, Price2: 50, Ratio: 0.5, Confirmed: true},
+			{Type: "bottomDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 70, ExitPrice: 50, Ratio: 0.5, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(input1)
@@ -508,7 +508,7 @@ func TestBuy1_Confirmed(t *testing.T) {
 			{Type: "trend", Direction: types.DirectionDown, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "bottomDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 70, Price2: 50, Ratio: 0.5, Confirmed: true},
+			{Type: "bottomDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 70, ExitPrice: 50, Ratio: 0.5, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(input2)
@@ -543,7 +543,7 @@ func TestSell1_Invalidated(t *testing.T) {
 			{Type: "trend", Direction: types.DirectionUp, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "topDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 80, Price2: 90, Ratio: 0.8, Confirmed: true},
+			{Type: "topDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 80, ExitPrice: 90, Ratio: 0.8, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(input1)
@@ -567,7 +567,7 @@ func TestSell1_Invalidated(t *testing.T) {
 			{Type: "trend", Direction: types.DirectionUp, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "topDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 80, Price2: 90, Ratio: 0.8, Confirmed: true},
+			{Type: "topDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 80, ExitPrice: 90, Ratio: 0.8, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(input2)

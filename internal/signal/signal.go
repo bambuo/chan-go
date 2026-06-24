@@ -439,11 +439,11 @@ func (e *SignalEngine) recognizeBuy1(symbol string, in *chanlun.SignalInput) {
 	if lastPZ == nil {
 		return
 	}
-	if div.Price2 >= lastPZ.ZD {
+	if div.ExitPrice >= lastPZ.ZD {
 		return
 	}
 
-	anchorKey := fmt.Sprintf("%s|%s|BUY_1|div_%d", symbol, types.LevelL1, div.Stroke2Idx)
+	anchorKey := fmt.Sprintf("%s|%s|BUY_1|div_%d", symbol, types.LevelL1, div.ExitEnd)
 	if _, exists := e.anchorIndex[anchorKey]; exists {
 		return
 	}
@@ -455,32 +455,32 @@ func (e *SignalEngine) recognizeBuy1(symbol string, in *chanlun.SignalInput) {
 		TS:          now,
 		Type:        types.SignalBuy1,
 		Level:       types.LevelL1,
-		Price:       div.Price2,
+		Price:       div.ExitPrice,
 		State:       types.SignalCandidate,
 		Provisional: true,
 		Confidence:  calcDivergenceConfidence(div, tp),
 		Anchor: types.SignalAnchor{
 			Kind:                  "divergenceSegment",
-			DivergenceLineage:     fmt.Sprintf("L_%s_bi_%d", symbol, div.Stroke2Idx),
-			PreviousStrokeLineage: fmt.Sprintf("L_%s_bi_%d", symbol, div.Stroke1Idx),
+			DivergenceLineage:     fmt.Sprintf("L_%s_bi_%d", symbol, div.ExitEnd),
+			PreviousStrokeLineage: fmt.Sprintf("L_%s_bi_%d", symbol, div.EntryEnd),
 		},
 		Evidence: types.Evidence{
 			TrendDirection: "down",
 			PivotZoneCount: len(tp.PivotZoneIDs),
 			Divergence: &types.DivergenceEvidence{
 				Method:       "priceRange",
-				CurrentArea:  div.Strength2,
-				PreviousArea: div.Strength1,
+				CurrentArea:  div.ExitMACD,
+				PreviousArea: div.EntryMACD,
 				Ratio:        div.Ratio,
 				Threshold:    0.95,
 			},
 		},
-		Targets: calcBuy1Targets(div.Price2, lastPZ),
+		Targets: calcBuy1Targets(div.ExitPrice, lastPZ),
 	}
 
 	e.addSignal(sig, anchorKey)
 	e.lastBuy1s[symbol] = sig
-	e.logger.Info("一买信号", "symbol", symbol, "price", div.Price2, "pivotZoneCount", len(tp.PivotZoneIDs), "divergenceRatio", div.Ratio)
+	e.logger.Info("一买信号", "symbol", symbol, "price", div.ExitPrice, "pivotZoneCount", len(tp.PivotZoneIDs), "divergenceRatio", div.Ratio)
 }
 
 // ====== 一卖 ======
@@ -504,11 +504,11 @@ func (e *SignalEngine) recognizeSell1(symbol string, in *chanlun.SignalInput) {
 	if lastPZ == nil {
 		return
 	}
-	if div.Price2 <= lastPZ.ZG {
+	if div.ExitPrice <= lastPZ.ZG {
 		return
 	}
 
-	anchorKey := fmt.Sprintf("%s|%s|SELL_1|div_%d", symbol, types.LevelL1, div.Stroke2Idx)
+	anchorKey := fmt.Sprintf("%s|%s|SELL_1|div_%d", symbol, types.LevelL1, div.ExitEnd)
 	if _, exists := e.anchorIndex[anchorKey]; exists {
 		return
 	}
@@ -520,27 +520,27 @@ func (e *SignalEngine) recognizeSell1(symbol string, in *chanlun.SignalInput) {
 		TS:          now,
 		Type:        types.SignalSell1,
 		Level:       types.LevelL1,
-		Price:       div.Price2,
+		Price:       div.ExitPrice,
 		State:       types.SignalCandidate,
 		Provisional: true,
 		Confidence:  calcDivergenceConfidence(div, tp),
 		Anchor: types.SignalAnchor{
 			Kind:                  "divergenceSegment",
-			DivergenceLineage:     fmt.Sprintf("L_%s_bi_%d", symbol, div.Stroke2Idx),
-			PreviousStrokeLineage: fmt.Sprintf("L_%s_bi_%d", symbol, div.Stroke1Idx),
+			DivergenceLineage:     fmt.Sprintf("L_%s_bi_%d", symbol, div.ExitEnd),
+			PreviousStrokeLineage: fmt.Sprintf("L_%s_bi_%d", symbol, div.EntryEnd),
 		},
 		Evidence: types.Evidence{
 			TrendDirection: "up",
 			PivotZoneCount: len(tp.PivotZoneIDs),
 			Divergence: &types.DivergenceEvidence{
 				Method:       "priceRange",
-				CurrentArea:  div.Strength2,
-				PreviousArea: div.Strength1,
+				CurrentArea:  div.ExitMACD,
+				PreviousArea: div.EntryMACD,
 				Ratio:        div.Ratio,
 				Threshold:    0.95,
 			},
 		},
-		Targets: calcSell1Targets(div.Price2, lastPZ),
+		Targets: calcSell1Targets(div.ExitPrice, lastPZ),
 	}
 
 	e.addSignal(sig, anchorKey)

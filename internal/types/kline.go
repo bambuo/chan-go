@@ -78,6 +78,9 @@ func (d ChanDirection) String() string {
 type ChanKline struct {
 	High        float64       // 包含处理后的高点
 	Low         float64       // 包含处理后的低点
+	Close       float64       // 合并后收盘价（取原始 K 线 Close，合并时取最新）
+	Volume      float64       // 合并后成交量（累加原始 K 线 BaseVolume）
+	KlineIdx    int           // 该元素在原始 K 线序列中的起始索引（用于 MACD 索引）
 	RawHigh     float64       // 包含处理前的原始高点
 	RawLow      float64       // 包含处理前的原始低点
 	OpenTime    int64         // Unix毫秒

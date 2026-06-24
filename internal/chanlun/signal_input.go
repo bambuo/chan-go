@@ -43,15 +43,16 @@ type TrendPatternInfo struct {
 
 // DivergenceInfo 背驰信息子集。
 type DivergenceInfo struct {
-	Type       string
-	Stroke1Idx int
-	Stroke2Idx int
-	Price1     float64
-	Price2     float64
-	Strength1  float64
-	Strength2  float64
-	Ratio      float64
-	Confirmed  bool
+	Type       string  // "topDivergence" / "bottomDivergence"
+	ZoneIdx    int     // 最后中枢索引
+	EntryMACD  float64 // 进入段累积强度
+	ExitMACD   float64 // 离开段累积强度
+	EntryPrice float64 // 进入段极值价格
+	ExitPrice  float64 // 离开段极值价格
+	ExitEnd    int     // 离开段结束笔索引（用于信号溯源）
+	EntryEnd   int     // 进入段结束笔索引（用于信号溯源）
+	Ratio      float64 // ExitMACD / EntryMACD
+	Confirmed  bool    // Ratio < 0.95
 }
 
 // ToSignalInput 将 PipelineOutput 转换为 SignalInput。
@@ -95,15 +96,16 @@ func (out *PipelineOutput) ToSignalInput() *SignalInput {
 
 	for _, d := range out.Divergences {
 		input.Divergences = append(input.Divergences, DivergenceInfo{
-			Type:       d.Type,
-			Stroke1Idx: d.Stroke1Idx,
-			Stroke2Idx: d.Stroke2Idx,
-			Price1:     d.Price1,
-			Price2:     d.Price2,
-			Strength1:  d.Strength1,
-			Strength2:  d.Strength2,
-			Ratio:      d.Ratio,
-			Confirmed:  d.Confirmed,
+			Type:      d.Type,
+			ZoneIdx:   d.ZoneIdx,
+			EntryMACD: d.EntryMACD,
+			ExitMACD:  d.ExitMACD,
+			EntryPrice: d.EntryPrice,
+			ExitPrice:  d.ExitPrice,
+			ExitEnd:   d.ExitEnd,
+			EntryEnd:  d.EntryEnd,
+			Ratio:     d.Ratio,
+			Confirmed: d.Confirmed,
 		})
 	}
 

@@ -261,3 +261,111 @@ func TestTrendPattern_Reset(t *testing.T) {
 		t.Errorf("重置后期望 0 个走势类型, 实际 %d", len(loaded))
 	}
 }
+
+// ====== 趋势方向单调性校验测试 ======
+
+// TestTrendPattern_MonotonicityUp 验证：同向上涨中枢但未逐次抬高 → 不再归入同一趋势。
+//
+// 中枢1: [30, 40] Up, 中枢2: [10, 20] Up
+// 方向相同、不重叠，但 ZD2(10) < ZG1(40) → 不满足上涨单调性 → 应分属不同走势。
+func TestTrendPattern_MonotonicityUp(t *testing.T) {
+	tp := NewTrendPatternProcessor()
+
+	strokes := []*stroke{
+		mkStroke(0, 10, 5, 20, 15, types.DirectionUp),
+		mkStroke(1, 20, 15, 15, 8, types.DirectionDown),
+		mkStroke(2, 15, 8, 25, 18, types.DirectionUp),
+		mkStroke(3, 25, 18, 15, 10, types.DirectionDown),
+		mkStroke(4, 15, 10, 25, 18, types.DirectionUp),
+	}
+
+	pivotZones := []*pivotZone{
+		{
+			index:          0,
+			StartStrokeIdx: 0,
+			EndStrokeIdx:   2,
+			ZG:             40,
+			ZD:             30,
+			Direction:      types.DirectionUp,
+			SegmentsCount:  3,
+			Completed:      true,
+		},
+		{
+			index:          1,
+			StartStrokeIdx: 3,
+			EndStrokeIdx:   4,
+			ZG:             20,
+			ZD:             10,
+			Direction:      types.DirectionUp,
+			SegmentsCount:  2,
+			Completed:      false,
+		},
+	}
+
+	patterns := tp.Process("TEST", strokes, pivotZones)
+
+	// 不满足单调性，2 个中枢应分属不同走势 → 至少 2 个走势类型
+	if len(patterns) < 2 {
+		t.Fatalf("不满足单调性后期望 >= 2 个走势类型, 实际 %d", len(patterns))
+	}
+
+	// 不应有类型为 trend 且含 2 个中枢的走势
+	for _, p := range patterns {
+		if p.Type == "trend" && len(p.PivotZoneIDs) >= 2 {
+			t.Error("不满足上涨单调性的中枢不应被归入同一趋势")
+		}
+		t.Logf("走势: 类型=%s 方向=%v 中枢数=%d", p.Type, p.Direction, len(p.PivotZoneIDs))
+	}
+}
+
+// TestTrendPattern_MonotonicityDown 验证：同向下跌中枢但未逐次降低 → 不再归入同一趋势。
+//
+// 中枢1: [10, 20] Down, 中枢2: [30, 40] Down
+// 方向相同、不重叠，但 ZG2(40) > ZD1(20) → 不满足下跌单调性 → 应分属不同走势。
+func TestTrendPattern_MonotonicityDown(t *testing.T) {
+	tp := NewTrendPatternProcessor()
+
+	strokes := []*stroke{
+		mkStroke(0, 10, 5, 20, 15, types.DirectionDown),
+		mkStroke(1, 20, 15, 15, 8, types.DirectionUp),
+		mkStroke(2, 15, 8, 25, 18, types.DirectionDown),
+		mkStroke(3, 25, 18, 30, 22, types.DirectionUp),
+		mkStroke(4, 30, 22, 40, 32, types.DirectionDown),
+	}
+
+	pivotZones := []*pivotZone{
+		{
+			index:          0,
+			StartStrokeIdx: 0,
+			EndStrokeIdx:   2,
+			ZG:             20,
+			ZD:             10,
+			Direction:      types.DirectionDown,
+			SegmentsCount:  3,
+			Completed:      true,
+		},
+		{
+			index:          1,
+			StartStrokeIdx: 3,
+			EndStrokeIdx:   4,
+			ZG:             40,
+			ZD:             30,
+			Direction:      types.DirectionDown,
+			SegmentsCount:  2,
+			Completed:      false,
+		},
+	}
+
+	patterns := tp.Process("TEST", strokes, pivotZones)
+
+	if len(patterns) < 2 {
+		t.Fatalf("不满足单调性后期望 >= 2 个走势类型, 实际 %d", len(patterns))
+	}
+
+	for _, p := range patterns {
+		if p.Type == "trend" && len(p.PivotZoneIDs) >= 2 {
+			t.Error("不满足下跌单调性的中枢不应被归入同一趋势")
+		}
+		t.Logf("走势: 类型=%s 方向=%v 中枢数=%d", p.Type, p.Direction, len(p.PivotZoneIDs))
+	}
+}

@@ -32,8 +32,8 @@ func buy1SignalInput(symbol string) *chanlun.SignalInput {
 			{Type: "trend", Direction: types.DirectionDown, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "bottomDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 70, Price2: 50,
-				Strength1: 30, Strength2: 15, Ratio: 0.5, Confirmed: true},
+			{Type: "bottomDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 70, ExitPrice: 50,
+				EntryMACD: 30, ExitMACD: 15, Ratio: 0.5, Confirmed: true},
 		},
 	}
 }
@@ -142,8 +142,8 @@ func TestStateMachine_Sell1_Confirmed(t *testing.T) {
 			{Type: "trend", Direction: types.DirectionUp, PivotZoneIDs: []int{0, 1}},
 		},
 		Divergences: []chanlun.DivergenceInfo{
-			{Type: "topDivergence", Stroke1Idx: 2, Stroke2Idx: 4, Price1: 80, Price2: 100,
-				Strength1: 30, Strength2: 15, Ratio: 0.5, Confirmed: true},
+			{Type: "topDivergence", EntryEnd: 2, ExitEnd: 4, EntryPrice: 80, ExitPrice: 100,
+				EntryMACD: 30, ExitMACD: 15, Ratio: 0.5, Confirmed: true},
 		},
 	}
 	eng.OnSignalInput(sellInput)

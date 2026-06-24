@@ -33,6 +33,9 @@ type ContainProcessor struct {
 	lastMergeTarget     *types.ChanKline
 	lastMergeTargetHigh float64
 	lastMergeTargetLow  float64
+
+	// 已处理的原始 K 线总数（用于 ChanKline.KlineIdx）。
+	totalKlines int
 }
 
 // NewContainProcessor 创建新的包含处理器。
@@ -50,17 +53,22 @@ func NewContainProcessor() *ContainProcessor {
 //
 // 返回更新后的非包含元素列表。
 func (p *ContainProcessor) Process(raw *types.Kline) []*types.ChanKline {
+	p.totalKlines++
+
 	// 同周期实时更新：不创建新元素，更新已有值。
 	if len(p.elements) > 0 && raw.OpenTime == p.elements[len(p.elements)-1].OpenTime {
 		return p.updateLast(raw)
 	}
 
-	ck := &types.ChanKline{
-		High:       raw.High.InexactFloat64(),
-		Low:        raw.Low.InexactFloat64(),
-		RawHigh:    raw.High.InexactFloat64(),
-		RawLow:     raw.Low.InexactFloat64(),
-		OpenTime:   raw.OpenTime,
+		ck := &types.ChanKline{
+			High:       raw.High.InexactFloat64(),
+			Low:        raw.Low.InexactFloat64(),
+			Close:      raw.Close.InexactFloat64(),
+			Volume:     raw.BaseVolume.InexactFloat64(),
+			KlineIdx:   p.totalKlines - 1,
+			RawHigh:    raw.High.InexactFloat64(),
+			RawLow:     raw.Low.InexactFloat64(),
+			OpenTime:   raw.OpenTime,
 		CloseTime:  raw.CloseTime,
 		Direction:  types.DirectionNone,
 		Contained:  false,
@@ -68,6 +76,7 @@ func (p *ContainProcessor) Process(raw *types.Kline) []*types.ChanKline {
 	}
 
 	p.elements = append(p.elements, ck)
+	p.totalKlines++
 	p.resolveLast()
 	return p.nonContained()
 }
@@ -93,16 +102,18 @@ func (p *ContainProcessor) updateLast(raw *types.Kline) []*types.ChanKline {
 	}
 
 	if !last.Contained {
-		// 非包含：直接更新 High/Low，重新 resolve。
-		if newHigh > last.High {
-			last.High = newHigh
+			// 非包含：直接更新 High/Low，重新 resolve。
+			if newHigh > last.High {
+				last.High = newHigh
+			}
+			if newLow < last.Low {
+				last.Low = newLow
+			}
+			last.Close = raw.Close.InexactFloat64()
+			last.Volume = raw.BaseVolume.InexactFloat64()
+			p.resolveLast()
+			return p.nonContained()
 		}
-		if newLow < last.Low {
-			last.Low = newLow
-		}
-		p.resolveLast()
-		return p.nonContained()
-	}
 
 	// 被包含：回退 target 的合并状态。
 	if p.lastMergeTarget == last {
@@ -115,12 +126,18 @@ func (p *ContainProcessor) updateLast(raw *types.Kline) []*types.ChanKline {
 		p.lastMergeTarget.High = p.lastMergeTargetHigh
 		p.lastMergeTarget.Low = p.lastMergeTargetLow
 		p.lastMergeTarget.MergedFrom -= last.MergedFrom
+		p.lastMergeTarget.Volume -= last.Volume
+		if p.lastMergeTarget.Volume < 0 {
+			p.lastMergeTarget.Volume = 0
+		}
 	}
 
 	// 将 last 设为非包含，使用当前最新值。
 	last.Contained = false
 	last.High = newHigh
 	last.Low = newLow
+	last.Close = raw.Close.InexactFloat64()
+	last.Volume = raw.BaseVolume.InexactFloat64()
 	last.MergedFrom = 1
 
 	p.resolveLast()
@@ -283,6 +300,10 @@ func (p *ContainProcessor) merge(target, curr *types.ChanKline, dir types.ChanDi
 			target.Low = curr.Low
 		}
 	}
+
+	// 收盘价取最新，成交量累加
+	target.Close = curr.Close
+	target.Volume += curr.Volume
 
 	curr.Contained = true
 	target.MergedFrom += curr.MergedFrom

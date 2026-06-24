@@ -148,6 +148,9 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 	s.contain.Process(raw)
 	s.totalKlines++
 
+	// 喂入收盘价用于 MACD 计算
+	s.divergence.FeedClose(s.symbol, raw.Close.InexactFloat64())
+
 	// 获取当前非包含元素
 	elements := s.contain.Elements()
 	s.lastOpenTime = raw.OpenTime
@@ -270,9 +273,9 @@ func (s *symbolState) process(raw *types.Kline) *PipelineOutput {
 		newTrendPatterns = allTrendPatterns[oldTrendPatternN:]
 	}
 
-	// 背驰判定：基于笔序列
-	if len(newStrokes) > 0 {
-		s.divergence.Process(s.symbol, allStrokes)
+	// 背驰判定：基于走势类型和中枢
+	if len(newStrokes) > 0 || len(newPivotZones) > 0 || backtrackFrom >= 0 {
+		s.divergence.Process(s.symbol, allStrokes, allPivotZones, allTrendPatterns)
 	}
 
 	// 获取所有背驰信号

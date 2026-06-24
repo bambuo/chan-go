@@ -323,17 +323,20 @@ func (m *mockDebugWriter) Write(output *PipelineOutput) error { return nil }
 // ====== divergenceToEvidence 测试 ======
 
 func TestDivergenceToEvidence(t *testing.T) {
-	d := &divergence{
-		Type:       "topDivergence",
-		Stroke1Idx: 0,
-		Stroke2Idx: 2,
-		Price1:     100,
-		Price2:     120,
-		Strength1:  1.5,
-		Strength2:  1.2,
-		Ratio:      0.8,
-		Confirmed:  true,
-	}
+		d := &divergence{
+			Type:       "topDivergence",
+			ZoneIdx:    0,
+			EntryStart: 0,
+			EntryEnd:   0,
+			ExitStart:  1,
+			ExitEnd:    2,
+			EntryMACD:  1.5,
+			ExitMACD:   1.2,
+			EntryPrice: 100,
+			ExitPrice:  120,
+			Ratio:      0.8,
+			Confirmed:  true,
+		}
 
 	e := divergenceToEvidence(d)
 	if e == nil {

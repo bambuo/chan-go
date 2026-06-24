@@ -207,8 +207,24 @@ func (st *trendPatternState) classify() {
 		prev := st.pivotZones[i-1]
 		curr := st.pivotZones[i]
 
+		// 方向变化或重叠 → 新走势
 		if pivotZonesOverlap(prev, curr) || curr.Direction != prev.Direction {
-			// 方向变化或重叠 = 当前走势结束，反向走势开始
+			groups = append(groups, current)
+			current = group{zones: []*pivotZone{curr}, dir: curr.Direction}
+			continue
+		}
+
+		// 同向不重叠时，还需校验方向单调性（第72课）：
+		//   上涨趋势：中枢逐次抬高（新 ZD > 旧 ZG）
+		//   下跌趋势：中枢逐次降低（新 ZG < 旧 ZD）
+		// 不满足单调性说明走势已衰竭，应分属不同走势类型。
+		monotonic := false
+		if curr.Direction == types.DirectionUp {
+			monotonic = curr.ZD > prev.ZG
+		} else {
+			monotonic = curr.ZG < prev.ZD
+		}
+		if !monotonic {
 			groups = append(groups, current)
 			current = group{zones: []*pivotZone{curr}, dir: curr.Direction}
 		} else {

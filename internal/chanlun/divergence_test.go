@@ -7,6 +7,11 @@ import (
 	"trade/internal/types"
 )
 
+// ====== 趋势背驰测试（第53课定义） ======
+//
+// 背驰 = 比较最后一个中枢的进入段 vs 离开段的累积强度。
+// 趋势背驰需要至少 1 个中枢（走势类型）才能比较。
+
 // mkDivStroke 快速创建用于背驰测试的笔。
 func mkDivStroke(index int, startPrice, endPrice float64, direction types.ChanDirection) *stroke {
 	var high, low float64
@@ -28,160 +33,147 @@ func mkDivStroke(index int, startPrice, endPrice float64, direction types.ChanDi
 	}
 }
 
-// ====== 基础背驰测试 ======
+// TestDivergence_TrendUp_Confirmed 验证：上涨趋势（≥1中枢），离开段力度 < 进入段 → 确认顶背驰。
 //
-// DivergenceProcessor 现在使用正确的比较逻辑：
-// 比较相邻同向笔（idx-2 vs idx），严格交替笔序列中：
-//   [d0, u1, d2, u3, d4, u5, d6] →
-//     idx=2: d0 vs d2,  idx=3: u1 vs u3,  idx=4: d2 vs d4,  ...
-
-// TestDivergence_BottomDivergence 验证：下跌趋势中出现底背驰。
-func TestDivergence_BottomDivergence(t *testing.T) {
+// 进入段: bi0 Up(10→30, 强度=20, 高价=30)
+// 中枢:   bi1-bi3 (Down→Up→Down, 区间 [25,35])
+// 离开段: bi4 Up(25→40, 强度=15, 高价=40)
+// 高价比较: exitHigh(40) > entryHigh(30) ✓
+// 力度衰减: exitMACD(15) / entryMACD(20) = 0.75 < 0.95 → 确认!
+func TestDivergence_TrendUp_Confirmed(t *testing.T) {
 	dp := NewDivergenceProcessor()
 
-	// [d(20), u, d(35), u, d(25)]
-	// idx=2: d0(20∅80) vs d2(35∅60) → 价格新低, 强度增大 ratio=1.75 → 不背驰
-	// idx=4: d2(35∅60) vs d4(25∅50) → 价格新低, 强度减弱 ratio=0.71 → 背驰!
 	strokes := []*stroke{
-		mkDivStroke(0, 100, 80, types.DirectionDown),  // d0: 强度=20
-		mkDivStroke(1, 80, 95, types.DirectionUp),
-		mkDivStroke(2, 95, 60, types.DirectionDown),    // d2: 强度=35
-		mkDivStroke(3, 60, 75, types.DirectionUp),
-		mkDivStroke(4, 75, 50, types.DirectionDown),    // d4: 强度=25, 价格新低
+		mkDivStroke(0, 10, 30, types.DirectionUp),     // 进入段
+		mkDivStroke(1, 30, 20, types.DirectionDown),    // 中枢
+		mkDivStroke(2, 20, 35, types.DirectionUp),      // 中枢
+		mkDivStroke(3, 35, 25, types.DirectionDown),    // 中枢 → [25,35]
+		mkDivStroke(4, 25, 40, types.DirectionUp),      // 离开段，强度=15 < 20
+	}
+	pivotZones := []*pivotZone{
+		{index: 0, StartStrokeIdx: 1, EndStrokeIdx: 3, ZG: 35, ZD: 25, Direction: types.DirectionUp, SegmentsCount: 3},
+	}
+	patterns := []*trendPattern{
+		{Index: 0, Type: "consolidation", Direction: types.DirectionUp, PivotZoneIDs: []int{0},
+			StartStrokeIdx: 0, EndStrokeIdx: 4, Completed: false},
 	}
 
-	divs := dp.Process("TEST", strokes)
-
-	t.Logf("背驰信号数: %d", len(divs))
-	for _, d := range divs {
-		t.Logf("  类型=%s 价格(%.0f→%.0f) 强度(%.0f→%.0f) 比率=%.2f 确认=%v",
-			d.Type, d.Price1, d.Price2, d.Strength1, d.Strength2, d.Ratio, d.Confirmed)
-	}
-
-	// 检查所有比较中强度增大的不应确认
-	for _, d := range divs {
-		if d.Strength2 > d.Strength1 && d.Confirmed {
-			t.Errorf("强度增大时不应确认背驰: S%d(%.0f)→S%d(%.0f) ratio=%.2f",
-				d.Stroke1Idx, d.Strength1, d.Stroke2Idx, d.Strength2, d.Ratio)
-		}
-	}
-}
-
-// TestDivergence_BottomDivergence_Confirmed 验证：强度减弱时确认底背驰。
-func TestDivergence_BottomDivergence_Confirmed(t *testing.T) {
-	dp := NewDivergenceProcessor()
-
-	// idx 最大为 len-2，5 根笔最多到 idx=3，所以需要 6 根笔。
-	// [d(20), u, d(30), u, d(15), u]
-	// idx=2: d0(20) vs d2(30) → 价格新低, 强度增大 → 不背驰
-	// idx=4: d2(30) vs d4(15) → 价格新低, 强度减弱 ratio=0.50 → 确认!
-	strokes := []*stroke{
-		mkDivStroke(0, 100, 80, types.DirectionDown),  // d0: 强度=20
-		mkDivStroke(1, 80, 85, types.DirectionUp),
-		mkDivStroke(2, 85, 55, types.DirectionDown),    // d2: 强度=30
-		mkDivStroke(3, 55, 65, types.DirectionUp),
-		mkDivStroke(4, 65, 50, types.DirectionDown),    // d4: 强度=15, 价格新低(50<55)
-		mkDivStroke(5, 50, 60, types.DirectionUp),
-	}
-
-	divs := dp.Process("TEST", strokes)
+	divs := dp.Process("TEST", strokes, pivotZones, patterns)
 
 	found := false
 	for _, d := range divs {
-		t.Logf("背驰: %s S%d(%.0f,强度%.0f)→S%d(%.0f,强度%.0f) 比率=%.2f 确认=%v",
-			d.Type, d.Stroke1Idx, d.Price1, d.Strength1,
-			d.Stroke2Idx, d.Price2, d.Strength2, d.Ratio, d.Confirmed)
-		if d.Type == "bottomDivergence" && d.Confirmed {
+		t.Logf("背驰: %s ratio=%.2f confirmed=%v", d.Type, d.Ratio, d.Confirmed)
+		if d.Type == "topDivergence" && d.Confirmed {
 			found = true
-			if d.Ratio >= 0.95 {
-				t.Errorf("背驰比率应 < 0.95, 实际 %.2f", d.Ratio)
-			}
 		}
 	}
 	if !found {
-		t.Error("未检测到确认的底背驰")
+		t.Error("上涨趋势力度减弱时应确认顶背驰")
 	}
 }
 
-// TestDivergence_TopDivergence 验证：上涨趋势中出现顶背驰。
-func TestDivergence_TopDivergence(t *testing.T) {
+// TestDivergence_TrendDown_Confirmed 验证：下跌趋势（≥1中枢），离开段力度 < 进入段 → 确认底背驰。
+//
+// 进入段: bi0 Down(40→10, 强度=30, 低价=10)
+// 中枢:   bi1-bi3 (Up→Down→Up, 区间 [15,30])
+// 离开段: bi4 Down(25→8, 强度=17, 低价=8)
+// 低价比较: exitLow(8) < entryLow(10) ✓
+// 力度衰减: exitMACD(17) / entryMACD(30) = 0.57 < 0.95 → 确认!
+func TestDivergence_TrendDown_Confirmed(t *testing.T) {
 	dp := NewDivergenceProcessor()
 
-	// [u(30), d, u(35), d, u(35)]
-	// idx=2: u0(30) vs u2(35) → 价格新高, 强度增大 ratio=1.17 → 不背驰
-	// idx=4: u2(35) vs u4(35) → 价格新高, 强度持平 ratio=1.00 → 不背驰
+	strokes := []*stroke{
+		mkDivStroke(0, 40, 10, types.DirectionDown),   // 进入段
+		mkDivStroke(1, 10, 28, types.DirectionUp),      // 中枢
+		mkDivStroke(2, 28, 15, types.DirectionDown),    // 中枢
+		mkDivStroke(3, 15, 30, types.DirectionUp),      // 中枢 → [15,30]
+		mkDivStroke(4, 25, 8, types.DirectionDown),     // 离开段，强度=17 < 30
+	}
+
+	pivotZones := []*pivotZone{
+		{index: 0, StartStrokeIdx: 1, EndStrokeIdx: 3, ZG: 30, ZD: 15, Direction: types.DirectionDown, SegmentsCount: 3},
+	}
+	patterns := []*trendPattern{
+		{Index: 0, Type: "consolidation", Direction: types.DirectionDown, PivotZoneIDs: []int{0},
+			StartStrokeIdx: 0, EndStrokeIdx: 4, Completed: false},
+	}
+
+	divs := dp.Process("TEST", strokes, pivotZones, patterns)
+
+	found := false
+	for _, d := range divs {
+		t.Logf("背驰: %s ratio=%.2f confirmed=%v", d.Type, d.Ratio, d.Confirmed)
+		if d.Type == "bottomDivergence" && d.Confirmed {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("下跌趋势力度减弱时应确认底背驰")
+	}
+}
+
+// TestDivergence_NoTrend 验证：无中枢列表时 → 无背驰信号。
+func TestDivergence_NoTrend(t *testing.T) {
+	dp := NewDivergenceProcessor()
+
 	strokes := []*stroke{
 		mkDivStroke(0, 30, 60, types.DirectionUp),
 		mkDivStroke(1, 60, 45, types.DirectionDown),
-		mkDivStroke(2, 45, 80, types.DirectionUp),
-		mkDivStroke(3, 80, 55, types.DirectionDown),
+	}
+
+	divs := dp.Process("TEST", strokes, nil, nil)
+
+	if len(divs) != 0 {
+		t.Errorf("无中枢时期望 0 个背驰, 实际 %d", len(divs))
+	}
+}
+
+// TestDivergence_CompletedTrendSkipped 验证：已完成的走势类型不重复检测。
+func TestDivergence_CompletedTrendSkipped(t *testing.T) {
+	dp := NewDivergenceProcessor()
+
+	strokes := []*stroke{
+		mkDivStroke(0, 30, 60, types.DirectionUp),
+		mkDivStroke(1, 60, 45, types.DirectionDown),
+		mkDivStroke(2, 45, 85, types.DirectionUp),
+		mkDivStroke(3, 85, 55, types.DirectionDown),
 		mkDivStroke(4, 55, 90, types.DirectionUp),
 	}
+	patterns := []*trendPattern{
+		{Index: 0, Type: "trend", Direction: types.DirectionUp, PivotZoneIDs: []int{0, 1},
+			StartStrokeIdx: 0, EndStrokeIdx: 4, Completed: true}, // 已完成
+	}
 
-	divs := dp.Process("TEST", strokes)
+	divs := dp.Process("TEST", strokes, nil, patterns)
 
-	for _, d := range divs {
-		if d.Confirmed {
-			t.Logf("  非预期确认: %s S%d→S%d 比率=%.2f", d.Type, d.Stroke1Idx, d.Stroke2Idx, d.Ratio)
-		}
+	if len(divs) != 0 {
+		t.Errorf("已完成的走势不检测背驰, 期望 0, 实际 %d", len(divs))
 	}
 }
 
-// TestDivergence_TopDivergence_Confirmed 验证：强度减弱时确认顶背驰。
-func TestDivergence_TopDivergence_Confirmed(t *testing.T) {
+// TestDivergence_EmptyEntryOrExit 验证：进入段或离开段为空时跳过。
+func TestDivergence_EmptyEntryOrExit(t *testing.T) {
 	dp := NewDivergenceProcessor()
 
-	// idx 最大为 len-2，需要 6 根笔才能到 idx=4。
-	// [u(30), d, u(40), d, u(20), d]
-	// idx=2: u0(str=30) vs u2(str=40) → 价格新高, 强度增大 → 不背驰
-	// idx=4: u2(str=40) vs u4(str=15) → 价格新高(90>85), 强度减弱 ratio=0.375 → 确认!
 	strokes := []*stroke{
-		mkDivStroke(0, 30, 60, types.DirectionUp),     // u0: Start=30 End=60 强度=|60-30|=30
-		mkDivStroke(1, 60, 45, types.DirectionDown),
-		mkDivStroke(2, 45, 85, types.DirectionUp),      // u2: Start=45 End=85 强度=|85-45|=40
-		mkDivStroke(3, 85, 55, types.DirectionDown),
-		mkDivStroke(4, 70, 90, types.DirectionUp),      // u4: Start=70 End=90 强度=|90-70|=20 < 40, 价格=90>85 → 确认!
-		mkDivStroke(5, 90, 75, types.DirectionDown),
+		mkDivStroke(0, 10, 5, types.DirectionDown),
+		mkDivStroke(1, 5, 12, types.DirectionUp),
+		mkDivStroke(2, 12, 6, types.DirectionDown),
+		mkDivStroke(3, 6, 18, types.DirectionUp),
+	}
+	// 中枢从 index 0 开始 → 进入段为空
+	pivotZones := []*pivotZone{
+		{index: 0, StartStrokeIdx: 0, EndStrokeIdx: 2, ZG: 12, ZD: 6, Direction: types.DirectionUp, SegmentsCount: 3},
+	}
+	patterns := []*trendPattern{
+		{Index: 0, Type: "consolidation", Direction: types.DirectionUp, PivotZoneIDs: []int{0},
+			StartStrokeIdx: 0, EndStrokeIdx: 3, Completed: false},
 	}
 
-	divs := dp.Process("TEST", strokes)
+	divs := dp.Process("TEST", strokes, pivotZones, patterns)
 
-	found := false
-	for _, d := range divs {
-		t.Logf("背驰: %s S%d→S%d 比率=%.2f 确认=%v",
-			d.Type, d.Stroke1Idx, d.Stroke2Idx, d.Ratio, d.Confirmed)
-		if d.Type == "topDivergence" && d.Confirmed {
-			found = true
-			t.Logf("顶背驰确认! S%d(%.0f,强度%.0f)→S%d(%.0f,强度%.0f) 比率=%.2f",
-				d.Stroke1Idx, d.Price1, d.Strength1,
-				d.Stroke2Idx, d.Price2, d.Strength2, d.Ratio)
-		}
-	}
-	if !found {
-		t.Error("未检测到确认的顶背驰")
-	}
-}
-
-// TestDivergence_NoDivergence 验证：无背驰时无信号。
-func TestDivergence_NoDivergence(t *testing.T) {
-	dp := NewDivergenceProcessor()
-
-	// [u(30), d, u(40), d, u(45)]
-	// idx=2: ratio=1.33, idx=4: ratio=1.125 → 均 > 0.95 → 无背驰
-	strokes := []*stroke{
-		mkDivStroke(0, 30, 60, types.DirectionUp),     // u0: 强度=30
-		mkDivStroke(1, 60, 45, types.DirectionDown),
-		mkDivStroke(2, 45, 85, types.DirectionUp),      // u2: 强度=40
-		mkDivStroke(3, 85, 55, types.DirectionDown),
-		mkDivStroke(4, 55, 100, types.DirectionUp),     // u4: 强度=45 > 40
-	}
-
-	divs := dp.Process("TEST", strokes)
-
-	for _, d := range divs {
-		if d.Confirmed {
-			t.Errorf("无背驰场景不应有确认信号: %s (ratio=%.2f)", d.Type, d.Ratio)
-		}
+	if len(divs) != 0 {
+		t.Errorf("进入段为空时应跳过, 期望 0, 实际 %d", len(divs))
 	}
 }
 
@@ -190,12 +182,19 @@ func TestDivergence_Reset(t *testing.T) {
 	dp := NewDivergenceProcessor()
 
 	strokes := []*stroke{
-		mkDivStroke(0, 100, 80, types.DirectionDown),
-		mkDivStroke(1, 80, 95, types.DirectionUp),
-		mkDivStroke(2, 95, 60, types.DirectionDown),
+		mkDivStroke(0, 10, 5, types.DirectionDown),
+		mkDivStroke(1, 5, 12, types.DirectionUp),
+		mkDivStroke(2, 12, 6, types.DirectionDown),
+	}
+	pivotZones := []*pivotZone{
+		{index: 0, StartStrokeIdx: 1, EndStrokeIdx: 3, ZG: 12, ZD: 6, Direction: types.DirectionUp, SegmentsCount: 3},
+	}
+	patterns := []*trendPattern{
+		{Index: 0, Type: "consolidation", Direction: types.DirectionUp, PivotZoneIDs: []int{0},
+			StartStrokeIdx: 0, EndStrokeIdx: 2, Completed: false},
 	}
 
-	dp.Process("TEST", strokes)
+	dp.Process("TEST", strokes, pivotZones, patterns)
 	dp.Reset("TEST")
 
 	divs := dp.Load("TEST")

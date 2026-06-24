@@ -96,13 +96,14 @@ type TrendPatternDump struct {
 
 // DivergenceDump 背驰信号的调试表示。
 type DivergenceDump struct {
-	Type       string  `json:"type"`
-	Stroke1Idx int     `json:"stroke1Idx"`
-	Stroke2Idx int     `json:"stroke2Idx"`
-	Price1     float64 `json:"price1"`
-	Price2     float64 `json:"price2"`
-	Ratio      float64 `json:"ratio"`
-	Confirmed  bool    `json:"confirmed"`
+	Type      string  `json:"type"`
+	ZoneIdx   int     `json:"zoneIdx"`
+	EntryMACD float64 `json:"entryMACD"`
+	ExitMACD  float64 `json:"exitMACD"`
+	EntryPrice float64 `json:"entryPrice"`
+	ExitPrice float64 `json:"exitPrice"`
+	Ratio     float64 `json:"ratio"`
+	Confirmed bool    `json:"confirmed"`
 }
 
 // Writer 负责将结构快照写入调试目录。
@@ -274,17 +275,18 @@ func convert(out *chanlun.PipelineOutput) *Snapshot {
 	}
 
 	// 背驰
-	for _, d := range out.Divergences {
-		snap.Divergences = append(snap.Divergences, DivergenceDump{
-			Type:       d.Type,
-			Stroke1Idx: d.Stroke1Idx,
-			Stroke2Idx: d.Stroke2Idx,
-			Price1:     d.Price1,
-			Price2:     d.Price2,
-			Ratio:      d.Ratio,
-			Confirmed:  d.Confirmed,
-		})
-	}
+		for _, d := range out.Divergences {
+			snap.Divergences = append(snap.Divergences, DivergenceDump{
+				Type:       d.Type,
+				ZoneIdx:    d.ZoneIdx,
+				EntryMACD:  d.EntryMACD,
+				ExitMACD:   d.ExitMACD,
+				EntryPrice: d.EntryPrice,
+				ExitPrice:  d.ExitPrice,
+				Ratio:      d.Ratio,
+				Confirmed:  d.Confirmed,
+			})
+		}
 
 	return snap
 }

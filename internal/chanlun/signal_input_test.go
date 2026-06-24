@@ -21,9 +21,9 @@ func TestToSignalInput_Basic(t *testing.T) {
 		TrendPatterns: []*trendPattern{
 			{Index: 0, Type: "consolidation", Direction: types.DirectionUp, PivotZoneIDs: []int{0}},
 		},
-		Divergences: []*divergence{
-			{Type: "bottomDivergence", Stroke1Idx: 0, Stroke2Idx: 2, Ratio: 0.5, Confirmed: true},
-		},
+			Divergences: []*divergence{
+				{Type: "bottomDivergence", ZoneIdx: 0, EntryMACD: 10, ExitMACD: 5, EntryPrice: 20, ExitPrice: 10, ExitEnd: 2, EntryEnd: 0, Ratio: 0.5, Confirmed: true},
+			},
 	}
 
 	input := output.ToSignalInput()
@@ -120,18 +120,17 @@ func TestToSignalInput_DivergenceDetails(t *testing.T) {
 			{Index: 4, Direction: types.DirectionDown, StartPrice: 85, EndPrice: 50, High: 85, Low: 50},
 		},
 		Divergences: []*divergence{
-			{
-				Type:       "bottomDivergence",
-				Stroke1Idx: 2,
-				Stroke2Idx: 4,
-				Price1:     70,
-				Price2:     50,
-				Strength1:  30,
-				Strength2:  15,
-				Ratio:      0.5,
-				Confirmed:  true,
+				{
+					Type:       "bottomDivergence",
+					ZoneIdx:    1,
+					EntryMACD:  30,
+					ExitMACD:   15,
+					EntryPrice: 70,
+					ExitPrice:  50,
+					Ratio:      0.5,
+					Confirmed:  true,
+				},
 			},
-		},
 	}
 
 	input := output.ToSignalInput()
@@ -141,13 +140,13 @@ func TestToSignalInput_DivergenceDetails(t *testing.T) {
 	}
 
 	d := input.Divergences[0]
-	if d.Stroke1Idx != 2 || d.Stroke2Idx != 4 {
-		t.Error("背驰笔索引不正确")
+	if d.ZoneIdx != 1 {
+		t.Error("背驰中枢索引不正确")
 	}
-	if d.Price1 != 70 || d.Price2 != 50 {
+	if d.EntryPrice != 70 || d.ExitPrice != 50 {
 		t.Error("背驰价格不正确")
 	}
-	if d.Strength1 != 30 || d.Strength2 != 15 {
+	if d.EntryMACD != 30 || d.ExitMACD != 15 {
 		t.Error("背驰强度不正确")
 	}
 	if d.Ratio != 0.5 {
