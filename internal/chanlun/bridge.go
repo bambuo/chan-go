@@ -160,31 +160,31 @@ func (b *M3Bridge) buildLevelStructure(output *PipelineOutput) *types.DualTrackS
 	}
 }
 
-// registerElements 注册新元素的 lineage。
+// registerElements 注册新增元素的 lineage。
 func (b *M3Bridge) registerElements(output *PipelineOutput) {
 	ts := time.Now().UnixMilli()
 
-	for i := range output.AllElements {
-		elementID := fmt.Sprintf("%s_ck_%d", output.Symbol, i)
-		lineageID := fmt.Sprintf("L_%s_ck_%d", output.Symbol, i)
+	for i := range output.NewElements {
+		elementID := fmt.Sprintf("%s_ck_%d", output.Symbol, len(output.AllElements)-len(output.NewElements)+i)
+		lineageID := fmt.Sprintf("L_%s_ck_%d", output.Symbol, len(output.AllElements)-len(output.NewElements)+i)
 		b.tree.RegisterElement(elementID, lineageID, types.ElementTypeMergedKLine, ts)
 	}
 
-	for i := range output.AllFractals {
-		elementID := fmt.Sprintf("%s_f_%d", output.Symbol, i)
-		lineageID := fmt.Sprintf("L_%s_f_%d", output.Symbol, i)
+	for i := range output.NewFractals {
+		elementID := fmt.Sprintf("%s_f_%d", output.Symbol, len(output.AllFractals)-len(output.NewFractals)+i)
+		lineageID := fmt.Sprintf("L_%s_f_%d", output.Symbol, len(output.AllFractals)-len(output.NewFractals)+i)
 		b.tree.RegisterElement(elementID, lineageID, types.ElementTypeFractal, ts)
 	}
 
-	for i := range output.Strokes {
-		elementID := fmt.Sprintf("%s_bi_%d", output.Symbol, i)
-		lineageID := fmt.Sprintf("L_%s_bi_%d", output.Symbol, i)
+	for i := range output.NewStrokes {
+		elementID := fmt.Sprintf("%s_bi_%d", output.Symbol, len(output.Strokes)-len(output.NewStrokes)+i)
+		lineageID := fmt.Sprintf("L_%s_bi_%d", output.Symbol, len(output.Strokes)-len(output.NewStrokes)+i)
 		b.tree.RegisterElement(elementID, lineageID, types.ElementTypeStroke, ts)
 	}
 
-	for i := range output.PivotZones {
-		elementID := fmt.Sprintf("%s_zs_%d", output.Symbol, i)
-		lineageID := fmt.Sprintf("L_%s_zs_%d", output.Symbol, i)
+	for i := range output.NewPivotZones {
+		elementID := fmt.Sprintf("%s_zs_%d", output.Symbol, len(output.PivotZones)-len(output.NewPivotZones)+i)
+		lineageID := fmt.Sprintf("L_%s_zs_%d", output.Symbol, len(output.PivotZones)-len(output.NewPivotZones)+i)
 		b.tree.RegisterElement(elementID, lineageID, types.ElementTypePivotZone, ts)
 	}
 }

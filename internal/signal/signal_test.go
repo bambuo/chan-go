@@ -83,16 +83,16 @@ func TestBuy1_NotDetected_NoTrend(t *testing.T) {
 // TestBuy3 验证：向上离开中枢 + 回调不触及 ZG → 三买。
 func TestBuy3_Detected(t *testing.T) {
 	eng := New(nil)
-	input := &chanlun.SignalInput{
-		Symbol: "TEST",
-		Strokes: []chanlun.StrokeInfo{
-			{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70},
-			{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 60},
-			{Index: 2, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 80},
-			{Index: 3, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 65},
-			{Index: 4, Direction: types.DirectionUp, StartPrice: 65, EndPrice: 95},
-			{Index: 5, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 75},
-		},
+		input := &chanlun.SignalInput{
+			Symbol: "TEST",
+			Strokes: []chanlun.StrokeInfo{
+				{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70, High: 70, Low: 50},
+				{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 60, High: 70, Low: 60},
+				{Index: 2, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 80, High: 80, Low: 60},
+				{Index: 3, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 65, High: 80, Low: 65},
+				{Index: 4, Direction: types.DirectionUp, StartPrice: 65, EndPrice: 95, High: 95, Low: 65},
+				{Index: 5, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 75, High: 95, Low: 75},
+			},
 		PivotZones: []chanlun.PivotZoneInfo{
 			{Index: 0, ZG: 72, ZD: 62, Direction: types.DirectionUp, EndStrokeIdx: 3},
 		},
@@ -112,15 +112,10 @@ func TestBuy3_Detected(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Logf("总信号数: %d", len(signals))
-		for _, s := range signals {
-			t.Logf("  信号: %s", s.Type)
+		if !found {
+			t.Error("三买应被检测到")
 		}
-		// 可能由于数据构造问题未检测到，不 fail
-		t.Log("⚠️ 三买未检测到（数据跨度可能不足）")
 	}
-}
 
 // TestSell1 验证：上涨趋势 + 顶背驰 → 一卖。
 func TestSell1_Detected(t *testing.T) {
@@ -335,23 +330,23 @@ func TestSell3_Detected(t *testing.T) {
 
 	input := &chanlun.SignalInput{
 		Symbol: "TEST",
-		Strokes: []chanlun.StrokeInfo{
-			{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70},
-			{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 55},
-			{Index: 2, Direction: types.DirectionUp, StartPrice: 55, EndPrice: 75},
-			{Index: 3, Direction: types.DirectionDown, StartPrice: 75, EndPrice: 58},
-			{Index: 4, Direction: types.DirectionUp, StartPrice: 58, EndPrice: 80},
-			// 向下离开中枢
-			{Index: 5, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 45, High: 80, Low: 45},
-			// 回抽不触及 ZD
-			{Index: 6, Direction: types.DirectionUp, StartPrice: 45, EndPrice: 55, High: 55, Low: 45},
-		},
-		PivotZones: []chanlun.PivotZoneInfo{
-			{Index: 0, ZG: 72, ZD: 58, Direction: types.DirectionDown, EndStrokeIdx: 3},
-		},
-		TrendPatterns: []chanlun.TrendPatternInfo{
-			{Type: "trend", Direction: types.DirectionDown, PivotZoneIDs: []int{0}},
-		},
+			Strokes: []chanlun.StrokeInfo{
+				{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70, High: 70, Low: 50},
+				{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 55, High: 70, Low: 55},
+				{Index: 2, Direction: types.DirectionUp, StartPrice: 55, EndPrice: 75, High: 75, Low: 55},
+				{Index: 3, Direction: types.DirectionDown, StartPrice: 75, EndPrice: 58, High: 75, Low: 58},
+				{Index: 4, Direction: types.DirectionUp, StartPrice: 58, EndPrice: 80, High: 80, Low: 58},
+				// 向下离开中枢
+				{Index: 5, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 45, High: 80, Low: 45},
+				// 回抽不触及 ZD
+				{Index: 6, Direction: types.DirectionUp, StartPrice: 45, EndPrice: 55, High: 55, Low: 45},
+			},
+			PivotZones: []chanlun.PivotZoneInfo{
+				{Index: 0, ZG: 72, ZD: 58, Direction: types.DirectionDown, EndStrokeIdx: 4},
+			},
+			TrendPatterns: []chanlun.TrendPatternInfo{
+				{Type: "trend", Direction: types.DirectionDown, PivotZoneIDs: []int{0}},
+			},
 	}
 
 	eng.OnSignalInput(input)
@@ -365,7 +360,7 @@ func TestSell3_Detected(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Log("三卖未检测到（数据跨度可能不足）")
-	}
+		if !found {
+			t.Error("三卖应被检测到")
+		}
 }

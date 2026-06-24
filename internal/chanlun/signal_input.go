@@ -44,6 +44,7 @@ type TrendPatternInfo struct {
 // DivergenceInfo 背驰信息子集。
 type DivergenceInfo struct {
 	Type       string  // "topDivergence" / "bottomDivergence"
+	Scope      string  // "trend"(趋势背驰) / "consolidation"(盘整背驰)
 	ZoneIdx    int     // 最后中枢索引
 	EntryMACD  float64 // 进入段累积强度
 	ExitMACD   float64 // 离开段累积强度
@@ -97,6 +98,7 @@ func (out *PipelineOutput) ToSignalInput() *SignalInput {
 	for _, d := range out.Divergences {
 		input.Divergences = append(input.Divergences, DivergenceInfo{
 			Type:      d.Type,
+			Scope:     d.Scope,
 			ZoneIdx:   d.ZoneIdx,
 			EntryMACD: d.EntryMACD,
 			ExitMACD:  d.ExitMACD,

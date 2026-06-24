@@ -700,9 +700,9 @@ func (e *SignalEngine) recognizeBuy3(symbol string, in *chanlun.SignalInput) {
 		if pullback == nil || pullback.Direction != types.DirectionDown {
 			continue
 		}
-		if pullback.Low >= pz.ZG {
-			continue
-		}
+		if pullback.Low <= pz.ZG {
+				continue // 回抽跌回中枢（不满足三买条件）
+			}
 		anchorKey := fmt.Sprintf("%s|%s|BUY_3|pz_%d_pb_%d", symbol, types.LevelL1, pz.Index, pullback.Index)
 		if _, exists := e.anchorIndex[anchorKey]; exists {
 			continue
@@ -758,9 +758,9 @@ func (e *SignalEngine) recognizeSell3(symbol string, in *chanlun.SignalInput) {
 		if pullback == nil || pullback.Direction != types.DirectionUp {
 			continue
 		}
-		if pullback.High <= pz.ZD {
-			continue
-		}
+		if pullback.High >= pz.ZD {
+				continue // 回抽涨回中枢（不满足三卖条件）
+			}
 		anchorKey := fmt.Sprintf("%s|%s|SELL_3|pz_%d_pb_%d", symbol, types.LevelL1, pz.Index, pullback.Index)
 		if _, exists := e.anchorIndex[anchorKey]; exists {
 			continue

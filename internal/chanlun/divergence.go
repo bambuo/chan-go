@@ -18,6 +18,7 @@ import (
 // 记录比较的中枢位置、进入段/离开段的笔索引范围和各自的累积强度。
 type divergence struct {
 	Type       string  // "topDivergence"(顶背驰) / "bottomDivergence"(底背驰)
+	Scope      string  // "trend"(趋势背驰) / "consolidation"(盘整背驰)
 	TrendIdx   int     // 所属走势类型索引
 	ZoneIdx    int     // 被比较的最后中枢索引
 	EntryStart int     // 进入段起始笔索引（含）
@@ -193,8 +194,14 @@ func (st *divergenceState) detectTrendDivergence(p *trendPattern, pivotZones []*
 	ratio := exitMACD / entryMACD
 	confirmed := ratio < 0.95
 
+	scope := "consolidation"
+	if p.Type == "trend" {
+		scope = "trend"
+	}
+
 	bc := &divergence{
 		Type:       bcType,
+		Scope:      scope,
 		TrendIdx:   p.Index,
 		ZoneIdx:    lastZoneID,
 		EntryStart: entryStart,
@@ -333,11 +340,12 @@ func strokeStrength(s *stroke) float64 {
 
 // divergenceToEvidence 转为输出结构。
 func divergenceToEvidence(bc *divergence) map[string]interface{} {
-	return map[string]interface{}{
-		"type":      bc.Type,
-		"price1":    bc.EntryMACD,
-		"price2":    bc.ExitMACD,
-		"ratio":     bc.Ratio,
-		"confirmed": bc.Confirmed,
-	}
+		return map[string]interface{}{
+			"type":      bc.Type,
+			"scope":     bc.Scope,
+			"price1":    bc.EntryMACD,
+			"price2":    bc.ExitMACD,
+			"ratio":     bc.Ratio,
+			"confirmed": bc.Confirmed,
+		}
 }

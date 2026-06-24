@@ -11,15 +11,15 @@ import (
 
 // TestSell3_Detected_Explicit 验证：向下中枢 + 离开笔 + 回抽笔 → 三卖。
 func TestSell3_Detected_Explicit(t *testing.T) {
-	eng := New(nil)
-	input := &chanlun.SignalInput{
-		Symbol: "TEST",
-		Strokes: []chanlun.StrokeInfo{
-			{Index: 0, Direction: types.DirectionDown, StartPrice: 100, EndPrice: 80},
-			{Index: 1, Direction: types.DirectionUp, StartPrice: 80, EndPrice: 95},
-			{Index: 2, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 70, High: 95, Low: 70}, // 离开中枢
-			{Index: 3, Direction: types.DirectionUp, StartPrice: 70, EndPrice: 85, High: 88, Low: 68},   // 回抽中枢 (high=88 > ZD=75)
-		},
+		eng := New(nil)
+		input := &chanlun.SignalInput{
+			Symbol: "TEST",
+			Strokes: []chanlun.StrokeInfo{
+				{Index: 0, Direction: types.DirectionDown, StartPrice: 100, EndPrice: 80},
+				{Index: 1, Direction: types.DirectionUp, StartPrice: 80, EndPrice: 95},
+				{Index: 2, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 70, High: 95, Low: 70}, // 离开中枢
+				{Index: 3, Direction: types.DirectionUp, StartPrice: 70, EndPrice: 73, High: 73, Low: 68},   // 回抽不触及 ZD (High=73 < ZD=75)
+			},
 		PivotZones: []chanlun.PivotZoneInfo{
 			{Index: 0, ZG: 95, ZD: 75, Direction: types.DirectionDown, EndStrokeIdx: 1},
 		},
@@ -37,7 +37,7 @@ func TestSell3_Detected_Explicit(t *testing.T) {
 	for _, s := range signals {
 		if s.Type == types.SignalSell3 {
 			found = true
-			if s.Price != 85 {
+				if s.Price != 73 {
 				t.Errorf("三卖价格期望 85, 实际 %.0f", s.Price)
 			}
 			if s.State != types.SignalCandidate {
@@ -112,15 +112,15 @@ func TestSell3_NotDetected_WrongDirection(t *testing.T) {
 
 // TestBuy3_Detected_Explicit 验证：向上中枢 + 离开笔 + 回调笔 → 三买。
 func TestBuy3_Detected_Explicit(t *testing.T) {
-	eng := New(nil)
-	input := &chanlun.SignalInput{
-		Symbol: "TEST",
-		Strokes: []chanlun.StrokeInfo{
-			{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70},
-			{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 60},
-			{Index: 2, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 80, High: 82, Low: 58},   // 离开中枢 (endPrice=80 > ZG=72)
-			{Index: 3, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 68, High: 82, Low: 65}, // 回调不破ZG (low=65 < ZG=72)
-		},
+		eng := New(nil)
+		input := &chanlun.SignalInput{
+			Symbol: "TEST",
+			Strokes: []chanlun.StrokeInfo{
+				{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70},
+				{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 60},
+				{Index: 2, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 80, High: 82, Low: 58},   // 离开中枢 (endPrice=80 > ZG=72)
+				{Index: 3, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 75, High: 82, Low: 73}, // 回调不破ZG (Low=73 > ZG=72)
+			},
 		PivotZones: []chanlun.PivotZoneInfo{
 			{Index: 0, ZG: 72, ZD: 62, Direction: types.DirectionUp, EndStrokeIdx: 1},
 		},
@@ -136,7 +136,7 @@ func TestBuy3_Detected_Explicit(t *testing.T) {
 	for _, s := range signals {
 		if s.Type == types.SignalBuy3 {
 			found = true
-			if s.Price != 68 {
+				if s.Price != 75 {
 				t.Errorf("三买价格期望 68, 实际 %.0f", s.Price)
 			}
 			break
@@ -209,30 +209,30 @@ func TestSell3_Confirmed(t *testing.T) {
 		{Index: 0, ZG: 95, ZD: 75, Direction: types.DirectionDown, EndStrokeIdx: 1},
 	}
 
-	input1 := &chanlun.SignalInput{
-		Symbol: "TEST",
-		Strokes: []chanlun.StrokeInfo{
-			{Index: 0, Direction: types.DirectionDown, StartPrice: 100, EndPrice: 80},
-			{Index: 1, Direction: types.DirectionUp, StartPrice: 80, EndPrice: 95},
-			{Index: 2, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 70, High: 95, Low: 70},
-			{Index: 3, Direction: types.DirectionUp, StartPrice: 70, EndPrice: 85, High: 88, Low: 68},
-		},
+		input1 := &chanlun.SignalInput{
+			Symbol: "TEST",
+			Strokes: []chanlun.StrokeInfo{
+				{Index: 0, Direction: types.DirectionDown, StartPrice: 100, EndPrice: 80},
+				{Index: 1, Direction: types.DirectionUp, StartPrice: 80, EndPrice: 95},
+				{Index: 2, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 70, High: 95, Low: 70},
+				{Index: 3, Direction: types.DirectionUp, StartPrice: 70, EndPrice: 73, High: 73, Low: 68},
+			},
 		PivotZones:    pz,
 		TrendPatterns: tp,
 	}
 	eng.OnSignalInput(input1)
 
-	// 第二次：顶背驰 → 三卖确认
-	input2 := &chanlun.SignalInput{
-		Symbol: "TEST",
-		Strokes: []chanlun.StrokeInfo{
-			{Index: 0, Direction: types.DirectionDown, StartPrice: 100, EndPrice: 80},
-			{Index: 1, Direction: types.DirectionUp, StartPrice: 80, EndPrice: 95},
-			{Index: 2, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 70, High: 95, Low: 70},
-			{Index: 3, Direction: types.DirectionUp, StartPrice: 70, EndPrice: 85, High: 88, Low: 68},
-			{Index: 4, Direction: types.DirectionDown, StartPrice: 85, EndPrice: 60},
-			{Index: 5, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 75},
-		},
+		// 第二次：顶背驰 → 三卖确认
+		input2 := &chanlun.SignalInput{
+			Symbol: "TEST",
+			Strokes: []chanlun.StrokeInfo{
+				{Index: 0, Direction: types.DirectionDown, StartPrice: 100, EndPrice: 80},
+				{Index: 1, Direction: types.DirectionUp, StartPrice: 80, EndPrice: 95},
+				{Index: 2, Direction: types.DirectionDown, StartPrice: 95, EndPrice: 70, High: 95, Low: 70},
+				{Index: 3, Direction: types.DirectionUp, StartPrice: 70, EndPrice: 73, High: 73, Low: 68},
+				{Index: 4, Direction: types.DirectionDown, StartPrice: 85, EndPrice: 60},
+				{Index: 5, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 75},
+			},
 		PivotZones:    pz,
 		TrendPatterns: tp,
 		Divergences: []chanlun.DivergenceInfo{
@@ -257,12 +257,12 @@ func TestSell3_Confirmed(t *testing.T) {
 
 // testStrokesBuy3 返回三买测试的基础笔数据。
 func testStrokesBuy3() []chanlun.StrokeInfo {
-	return []chanlun.StrokeInfo{
-		{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70},
-		{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 60},
-		{Index: 2, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 80, High: 82, Low: 58},
-		{Index: 3, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 68, High: 82, Low: 65},
-	}
+		return []chanlun.StrokeInfo{
+			{Index: 0, Direction: types.DirectionUp, StartPrice: 50, EndPrice: 70},
+			{Index: 1, Direction: types.DirectionDown, StartPrice: 70, EndPrice: 60},
+			{Index: 2, Direction: types.DirectionUp, StartPrice: 60, EndPrice: 80, High: 82, Low: 58},
+			{Index: 3, Direction: types.DirectionDown, StartPrice: 80, EndPrice: 75, High: 82, Low: 73},
+		}
 }
 
 // ====== evaluateBuy2Transition 测试 ======
