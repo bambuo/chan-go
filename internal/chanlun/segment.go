@@ -52,13 +52,13 @@ func buildFeatureSeq(strokes []*stroke, segDir types.ChanDirection, seqKind type
 			})
 		}
 	}
-	// 包含方向：
-	//   第一特征序列 → 与线段方向相反（向上线段向下合并，向下线段向上合并）。
-	//   第二特征序列 → 与线段方向一致（向上线段向上合并，向下线段向下合并）。
+	// 包含方向：与线段方向相反（向上线段向下合并，向下线段向上合并）。
+	//
+	// 第一特征序列（第67课）：segDir = 当前线段方向，与线段方向相反 = 与 segDir 相反。
+	// 第二特征序列（第78课）：segDir = 新线段方向 = opposite(原方向)，
+	//   与 segDir 相反 = 与原线段方向一致（符合第78课要求）。
+	// 两种情况下公式相同：mergeUp = (segDir == Down)。
 	mergeUp := fs.segDir == types.DirectionDown
-	if seqKind == types.FeatureSeqSecondary {
-		mergeUp = fs.segDir == types.DirectionUp
-	}
 	fs.applyInclusion(mergeUp)
 	return fs
 }

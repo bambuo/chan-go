@@ -101,6 +101,42 @@ func TestFeatureSeq_Containment(t *testing.T) {
 	}
 }
 
+// TestFeatureSeq_SecondaryInclusion 验证第二特征序列的包含方向。
+//
+// 第二特征序列（第78课）用于情况二，其 segDir = 新线段方向 = opposite(原文段)。
+// 包含方向应与 segDir 相反（等价于与原文段方向一致）。
+// 第67/78课：包含方向 = 与线段方向相反 → mergeUp = (segDir == Down)。
+//
+// 验证：segDir=Down 的 FeatureSeqSecondary 应向上合并（取较高高、较高低）。
+func TestFeatureSeq_SecondaryInclusion(t *testing.T) {
+	// segDir=Down（原文段向上被破坏后形成的新向下线段），
+	// 特征序列 = 向上笔。两根含包含关系的向上笔：
+	//   U1: [30, 48]  (被包含)
+	//   U2: [20, 50]  (包含 U1)
+	// 向上合并（正确）：U1 → low=30, high=50（取较高值）
+	// 向下合并（错误）：U1 → low=20, high=48（取较低值）
+	strokes := []*stroke{
+		{Index: 0, Direction: types.DirectionUp, StartPrice: 0, EndPrice: 0,
+			High: 48, Low: 30, Confirmed: true},
+		{Index: 1, Direction: types.DirectionUp, StartPrice: 0, EndPrice: 0,
+			High: 50, Low: 20, Confirmed: true},
+	}
+
+	// 第二特征序列，segDir=Down → 取向上笔，向上合并
+	fs := buildFeatureSeq(strokes, types.DirectionDown, types.FeatureSeqSecondary)
+
+	if len(fs.elems) != 1 {
+		t.Fatalf("包含处理后期望 1 个元素, 实际 %d", len(fs.elems))
+	}
+	gotHigh := fs.elems[0].high
+	gotLow := fs.elems[0].low
+	if gotHigh != 50 || gotLow != 30 {
+		t.Errorf("第二特征序列应向上合并, 期望 (low=30, high=50), 实际 (low=%.0f, high=%.0f)",
+			gotLow, gotHigh)
+	}
+	t.Logf("第二特征序列向上合并正确: (low=%.0f, high=%.0f)", gotLow, gotHigh)
+}
+
 // ====== 线段划分测试 ======
 
 // TestSegment_SingleUp 验证：单条向上线段。
