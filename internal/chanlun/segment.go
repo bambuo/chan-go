@@ -1,7 +1,12 @@
 // Package chanlun 实现特征序列与线段划分算法（特征序列算法.md / 线段划分算法.md）。
 //
 // SegmentProcessor 从已确认的笔序列出发，逐步构建线段结构。
-// 核心流程：每根新笔 → 加入当前线段 → 检测线段破坏（情况一/二）。
+//
+// 核心流程遵循缠论原文第67/71/78课的"假设转折点"判定法：
+//   - 反向笔出现 → 假设其为两线段分界点。
+//   - 构建第一特征序列，检测分型（顶/底，双AND定义）。
+//   - 分型第1、2元素间无缺口 → 情况一，直接确认线段结束。
+//   - 分型第1、2元素间有缺口 → 情况二，需第二特征序列出现分型才确认。
 package chanlun
 
 import (
@@ -31,7 +36,11 @@ type featureSeq struct {
 
 // buildFeatureSeq 从笔列表中提取特征序列。
 // segDir: 线段方向。向上线段取所有向下笔，向下线段取所有向上笔。
-func buildFeatureSeq(strokes []*stroke, segDir types.ChanDirection) *featureSeq {
+// seqKind: 特征序列类型，决定包含处理方向（第67/78课）。
+//
+//	第一特征序列：包含方向与线段方向相反（第67课）。
+//	第二特征序列：包含方向与线段方向一致（第78课）。
+func buildFeatureSeq(strokes []*stroke, segDir types.ChanDirection, seqKind types.FeatureSeqType) *featureSeq {
 	fs := &featureSeq{segDir: segDir}
 	for _, b := range strokes {
 		if b.Direction != segDir {
@@ -43,20 +52,24 @@ func buildFeatureSeq(strokes []*stroke, segDir types.ChanDirection) *featureSeq 
 			})
 		}
 	}
-	fs.applyInclusion()
+	// 包含方向：
+	//   第一特征序列 → 与线段方向相反（向上线段向下合并，向下线段向上合并）。
+	//   第二特征序列 → 与线段方向一致（向上线段向上合并，向下线段向下合并）。
+	mergeUp := fs.segDir == types.DirectionDown
+	if seqKind == types.FeatureSeqSecondary {
+		mergeUp = fs.segDir == types.DirectionUp
+	}
+	fs.applyInclusion(mergeUp)
 	return fs
 }
 
 // applyInclusion 对特征K线做包含处理。
-// 向上线段：特征序列包含处理方向与线段方向相反 = 向下（取较低高点和较低低点）
-// 向下线段：特征序列包含处理方向与线段方向相反 = 向上（取较高高点和较高低点）
-func (fs *featureSeq) applyInclusion() {
+// mergeUp=true → 向上合并（取较高高点和较高低点）；
+// mergeUp=false → 向下合并（取较低高点和较低低点）。
+func (fs *featureSeq) applyInclusion(mergeUp bool) {
 	if len(fs.raw) == 0 {
 		return
 	}
-
-	// 合并方向：与线段方向相反
-	mergeUp := fs.segDir == types.DirectionDown // 向下线段 → 向上合并
 
 	for _, r := range fs.raw {
 		r.index = len(fs.elems)
@@ -153,12 +166,20 @@ type segment struct {
 	confirmed   bool                // 是否已完成
 }
 
+// segPending 情况二的待确认中间态。
+// 第一特征序列出现分型且分型第1、2元素间有缺口时，记录转折点信息，
+// 等待第二特征序列出现分型后才确认线段结束。
+type segPending struct {
+	dir          types.ChanDirection // 被破坏线段方向（即 current.direction）
+	pivotStroke  *stroke             // 第一特征序列分型中间元素对应的笔（转折点）
+}
+
 // segState 线段划分状态机。
 type segState struct {
-	segments     []*segment // 已完成和当前的线段
-	current      *segment   // 当前正在构建的线段
-	pending      *segment   // 待确认的候选线段（情况二）
-	totalStrokes int        // 已处理的总笔数
+	segments     []*segment  // 已完成和当前的线段
+	current      *segment    // 当前正在构建的线段
+	pending      *segPending // 情况二待确认中间态
+	totalStrokes int         // 已处理的总笔数
 }
 
 // SegmentProcessor 线段划分处理器。
@@ -237,7 +258,7 @@ func (sp *SegmentProcessor) Reset(symbol string) {
 	delete(sp.states, symbol)
 }
 
-// ====== segState 方法 ======
+// ====== segment getter ======
 
 // Direction 返回线段方向。
 func (s *segment) Direction() types.ChanDirection { return s.direction }
@@ -257,12 +278,14 @@ func (s *segment) Low() float64 { return s.low }
 // Completed 返回线段是否已完成。
 func (s *segment) Completed() bool { return s.confirmed }
 
+// ====== segState 方法 ======
+
 // currentSegments 返回当前所有线段。
 func (s *segState) currentSegments() []*segment {
 	return s.segments
 }
 
-// processStroke 增量处理一根新笔。
+// processStroke 增量处理一根新笔（线段划分算法.md 完整流程）。
 func (s *segState) processStroke(newStroke *stroke) {
 	if s.current == nil {
 		// 第一笔 → 创建首个线段
@@ -273,17 +296,19 @@ func (s *segState) processStroke(newStroke *stroke) {
 	if newStroke.Direction == s.current.direction {
 		// 同向：延伸当前线段
 		s.extendCurrent(newStroke)
+		// 同向笔到来时，若存在情况二待确认态，需重新尝试第二特征序列确认
+		s.tryPendingConfirm()
 		return
 	}
 
-	// 反向笔：检查线段破坏
-	s.checkSegmentBreak(newStroke)
+	// 反向笔：进入假设转折点判定
+	s.trySegmentBreak(newStroke)
 }
 
 // startNewSegment 用第一笔创建首个线段。
 func (s *segState) startNewSegment(newStroke *stroke) {
 	seg := &segment{
-		index:       0,
+		index:       len(s.segments),
 		direction:   newStroke.Direction,
 		strokes:     []*stroke{newStroke},
 		startStroke: newStroke,
@@ -309,162 +334,167 @@ func (s *segState) extendCurrent(newStroke *stroke) {
 	}
 }
 
-// checkSegmentBreak 检查线段破坏（线段划分算法.md）。
-func (s *segState) checkSegmentBreak(newStroke *stroke) {
+// trySegmentBreak 处理反向笔：假设转折点判定。
+// 将反向笔并入当前线段后，构建第一特征序列，检测分型：
+//   - 无分型 → 等待更多笔。
+//   - 有分型且第1、2元素无缺口（情况一）→ 直接确认线段结束。
+//   - 有分型且第1、2元素有缺口（情况二）→ 记录 pending，等待第二特征序列确认。
+func (s *segState) trySegmentBreak(newStroke *stroke) {
 	currSeg := s.current
-
-	// 情况一：直接笔破坏
-	// 向上线段 → 向下笔的低点跌破前一段倒数第二笔（向上笔）的低点
-	// 向下线段 → 向上笔的高点升破前一段倒数第二笔（向下笔）的高点
-	directBreak := false
-	if len(currSeg.strokes) >= 2 {
-		secondLastStroke := currSeg.strokes[len(currSeg.strokes)-2] // 倒数第二笔（同向）
-		if currSeg.direction == types.DirectionUp {
-			// 当前向上段遇到向下笔
-			if newStroke.Low < secondLastStroke.Low {
-				directBreak = true
-			}
-		} else {
-			// 当前向下段遇到向上笔
-			if newStroke.High > secondLastStroke.High {
-				directBreak = true
-			}
-		}
-	}
-
-	if directBreak {
-		// 情况一：需要特征序列分型确认
-		s.handleType1Break(newStroke)
-	} else {
-		// 情况二：未直接破坏，等待特征序列分型（无缺口）
-		s.handleType2Break(newStroke)
-	}
-}
-
-// handleType1Break 处理情况一：直接笔破坏。
-func (s *segState) handleType1Break(newStroke *stroke) {
-	currSeg := s.current
-	oppositeDir := oppositeDirection(currSeg.direction)
-
-	// 创建候选线段（新方向），包含新笔
-	pendingSeg := &segment{
-		index:       len(s.segments),
-		direction:   oppositeDir,
-		strokes:     []*stroke{newStroke},
-		startStroke: newStroke,
-		endStroke:   newStroke,
-		startPrice:  newStroke.StartPrice,
-		endPrice:    newStroke.EndPrice,
-		high:        newStroke.High,
-		low:         newStroke.Low,
-	}
-
-	// 构建候选线段的特征序列（同方向的笔）
-	// 候选线段方向 = oppositeDir，特征序列 = 方向相同（因为取反向笔）
-	// 向上候选线段的特征序列 = 向下笔 = 当前 segment 方向
-	// 我们只需要检查候选线段中是否有足够的笔形成特征序列分型
-	if len(pendingSeg.strokes) >= 3 {
-		fs := buildFeatureSeq(pendingSeg.strokes, oppositeDir)
-		fractal := fs.detectFractal()
-		if oppositeDir == types.DirectionUp && fractal.HasBottom {
-			s.confirmSegmentBreak(pendingSeg)
-			return
-		}
-		if oppositeDir == types.DirectionDown && fractal.HasTop {
-			s.confirmSegmentBreak(pendingSeg)
-			return
-		}
-	}
-
-	// 特征序列分型尚未形成，将新笔加入当前线段继续等待
-	// 但记录为"有笔破坏"状态
 	currSeg.strokes = append(currSeg.strokes, newStroke)
-	s.pending = pendingSeg
-}
+	currSeg.endStroke = newStroke
+	currSeg.endPrice = newStroke.EndPrice
+	if newStroke.High > currSeg.high {
+		currSeg.high = newStroke.High
+	}
+	if newStroke.Low < currSeg.low {
+		currSeg.low = newStroke.Low
+	}
 
-// handleType2Break 处理情况二：未直接笔破坏，等待特征序列分型。
-func (s *segState) handleType2Break(newStroke *stroke) {
-	currSeg := s.current
-	oppositeDir := oppositeDirection(currSeg.direction)
+	// 向上线段只看特征序列顶分型；向下线段只看底分型（第67课）。
+	fs1 := buildFeatureSeq(currSeg.strokes, currSeg.direction, types.FeatureSeqPrimary)
+	fractal := fs1.detectFractal()
 
-	// 将新笔加入当前线段
-	currSeg.strokes = append(currSeg.strokes, newStroke)
-
-	// 构建当前线段的特征序列
-	fs := buildFeatureSeq(currSeg.strokes, currSeg.direction)
-	fractal := fs.detectFractal()
-
-	// 检查是否有匹配方向的分型
-	hasFractal := false
+	var hasFractal bool
+	var fractalIdx int
 	if currSeg.direction == types.DirectionUp && fractal.HasTop {
-		// 向上线段特征序列中出现的顶分型 → 确认线段被破坏
 		hasFractal = true
-	}
-	if currSeg.direction == types.DirectionDown && fractal.HasBottom {
+		fractalIdx = fractal.TopIndex
+	} else if currSeg.direction == types.DirectionDown && fractal.HasBottom {
 		hasFractal = true
+		fractalIdx = fractal.BottomIdx
 	}
 
 	if !hasFractal {
 		return // 继续等待
 	}
 
-	// 找到分型，确认线段破坏
-	// 将当前线段完成，从分型位置分裂
-	splitIdx := -1
-	if currSeg.direction == types.DirectionUp && fractal.HasTop {
-		// 找到特征序列顶分型对应的笔
-		splitIdx = s.featureFractalToStrokeIndex(currSeg.strokes, currSeg.direction, fractal.TopIndex)
+	// 取分型中间元素及其前一个元素（第1、2元素），判缺口。
+	if fractalIdx < 1 || fractalIdx >= len(fs1.elems) {
+		return
 	}
-	if currSeg.direction == types.DirectionDown && fractal.HasBottom {
-		splitIdx = s.featureFractalToStrokeIndex(currSeg.strokes, currSeg.direction, fractal.BottomIdx)
-	}
+	pivotStroke := fs1.elems[fractalIdx].sourceStroke // 转折点笔（用指针定位，避免索引失效）
+	elem1 := fs1.elems[fractalIdx-1]                  // 第1元素
+	elem2 := fs1.elems[fractalIdx]                    // 第2元素（分型中间）
 
-	if splitIdx >= 0 && splitIdx < len(currSeg.strokes)-1 {
-		// 分裂：分型前的笔属于原线段，分型后的笔属于新线段
-		remainStrokes := currSeg.strokes[:splitIdx+1]
-		newSegStrokes := currSeg.strokes[splitIdx+1:]
-
-		// 完成当前线段
-		completedSeg := s.finalizeSegment(currSeg, remainStrokes)
-		s.segments = append(s.segments, completedSeg)
-
-		// 创建新线段
-		if len(newSegStrokes) > 0 {
-			s.startNewSegmentFromStrokes(newSegStrokes, oppositeDir)
-		} else {
-			// 无剩余笔，等待下一笔
-			s.current = nil
-		}
-	}
-}
-
-// confirmSegmentBreak 确认线段破坏（情况一确认）。
-func (s *segState) confirmSegmentBreak(pendingSeg *segment) {
-	currSeg := s.current
-
-	// 找出 pendingSeg 第一笔在 currSeg 中的位置
-	breakIdx := -1
-	for i, b := range currSeg.strokes {
-		if b == pendingSeg.strokes[0] {
-			breakIdx = i
-			break
-		}
-	}
-
-	if breakIdx < 0 {
-		// 不应发生
+	if !hasGap(elem1, elem2) {
+		// 情况一：无缺口，直接确认线段在分型极值点结束。
+		s.confirmBreak(pivotStroke)
 		return
 	}
 
-	// 当前线段完成（包含破坏笔之前的所有笔）
-	completedBis := currSeg.strokes[:breakIdx]
-	if len(completedBis) > 0 {
-		completedSeg := s.finalizeSegment(currSeg, completedBis)
-		s.segments = append(s.segments, completedSeg)
+	// 情况二：有缺口，记录 pending（存转折点笔指针），等待第二特征序列确认。
+	s.pending = &segPending{
+		dir:         currSeg.direction,
+		pivotStroke: pivotStroke,
+	}
+	// 立即尝试一次第二特征序列确认（当前笔数可能已足够）。
+	s.tryPendingConfirm()
+}
+
+// tryPendingConfirm 情况二：尝试用第二特征序列确认线段结束。
+// 从第一特征序列分型转折点笔之后，构建第二特征序列。
+// 第67课："第二个序列中的分型，不分第一二种情况，只要有分型就可以。"
+func (s *segState) tryPendingConfirm() {
+	if s.pending == nil || s.current == nil {
+		return
 	}
 
-	// pendingSeg 成为当前线段
-	s.current = pendingSeg
+	currSeg := s.current
+	pivotStroke := s.pending.pivotStroke
+
+	// 定位转折点笔在 currSeg.strokes 中的位置。
+	pivotPos := -1
+	for i, b := range currSeg.strokes {
+		if b == pivotStroke {
+			pivotPos = i
+			break
+		}
+	}
+	if pivotPos < 0 {
+		return
+	}
+
+	// 第二特征序列：转折点之后的笔。
+	// 转折点笔方向与原线段相反（它是原线段特征序列的元素），
+	// 从它开始构成假设的新线段，方向 = opposite(currSeg.direction)。
+	// 新线段的特征序列 = 与新线段反向的笔 = 与原线段同向的笔。
+	subStrokes := currSeg.strokes[pivotPos:]
+	if len(subStrokes) < 3 {
+		return // 笔数不足以构成第二特征序列
+	}
+
+	newDir := oppositeDirection(currSeg.direction)
+	fs2 := buildFeatureSeq(subStrokes, newDir, types.FeatureSeqSecondary)
+	fractal2 := fs2.detectFractal()
+
+	// 第二特征序列只需出现分型即可（不分情况，第67课）。
+	// 新线段方向的规则同第一特征序列（第67课第5922行）：
+	// 向上线段只看顶分型，向下线段只看底分型。
+	confirmed := false
+	if newDir == types.DirectionUp && fractal2.HasTop {
+		confirmed = true
+	} else if newDir == types.DirectionDown && fractal2.HasBottom {
+		confirmed = true
+	}
+
+	if confirmed {
+		s.confirmBreak(pivotStroke)
+	}
+	// 未确认则保持 pending，等待后续笔再来尝试。
+}
+
+// confirmBreak 确认当前线段在转折点处结束，并起一个新线段。
+// pivotStroke: 第一特征序列分型中间元素对应的笔（转折点）。
+func (s *segState) confirmBreak(pivotStroke *stroke) {
+	currSeg := s.current
+
+	// 定位转折点笔在 currSeg.strokes 中的位置。
+	pivotPos := -1
+	for i, b := range currSeg.strokes {
+		if b == pivotStroke {
+			pivotPos = i
+			break
+		}
+	}
+	if pivotPos < 0 {
+		return
+	}
+
+	// 校验线段方向首尾一致性（第78课）：
+	// 向上线段必须结束于向上笔（向上笔的顶 = 终点），
+	// 向下线段必须结束于向下笔（向下笔的底 = 终点）。
+	// pivotStroke 是特征序列元素，方向与线段相反；其前一笔同向于线段，为真正终点。
+	endStroke := pivotStroke
+	if pivotPos > 0 {
+		endStroke = currSeg.strokes[pivotPos-1]
+	}
+	if endStroke.Direction != currSeg.direction {
+		return // 方向不一致，转折点假设不成立，放弃确认
+	}
+
+	remainStrokes := currSeg.strokes[:pivotPos] // endStroke 及之前属于原线段
+	if len(remainStrokes) == 0 {
+		return
+	}
+
+	// 完成当前线段
+	completedSeg := s.finalizeSegment(currSeg, remainStrokes)
+	s.segments = append(s.segments, completedSeg)
+
+	// 新线段：pivotPos 之后的笔，方向取反
+	newSegStrokes := currSeg.strokes[pivotPos:]
+	newDir := oppositeDirection(currSeg.direction)
+	if len(newSegStrokes) > 0 {
+		// 校验新线段首笔方向
+		if newSegStrokes[0].Direction == newDir {
+			s.startNewSegmentFromStrokes(newSegStrokes, newDir)
+		} else {
+			s.current = nil
+		}
+	} else {
+		s.current = nil
+	}
 	s.pending = nil
 }
 

@@ -19,7 +19,7 @@ func TestFeatureSeq_Gap(t *testing.T) {
 	// 向下线段,特征序列=向上笔
 	strokes := []*stroke{biUp1, biDown, biUp2}
 	segDir := types.DirectionDown
-	fs := buildFeatureSeq(strokes, segDir)
+	fs := buildFeatureSeq(strokes, segDir, types.FeatureSeqPrimary)
 
 	// 特征序列应该是向上笔: biUp1, biUp2
 	if len(fs.raw) != 2 {
@@ -64,201 +64,57 @@ func TestFeatureSeq_Gap(t *testing.T) {
 	})
 }
 
-// ====== 情况二完整确认测试 ======
+// ====== 向下线段情况二完整确认测试（对称方向） ======
 
-// TestSegment_Type2Break_FullConfirm 验证情况二线段破坏的完整流程：
-// 特征序列形成顶分型 → 线段分裂 → 新线段开始。
-func TestSegment_Type2Break_FullConfirm(t *testing.T) {
+// TestSegment_Type2_Down_SecondSeqConfirms 验证向下线段情况二：
+// 第一特征序列（向上笔）底分型有缺口 → 情况二，
+// 第二特征序列（向下笔）出现顶分型后确认线段结束。
+//
+// 向下线段的特征序列 = 向上笔，只考察底分型（第67课）。
+//   X1: [40, 52]   (Index2)   ← 第1元素
+//   X2: [10, 22]   (Index4)   ← 中点（low 最低、high 最低），转折点
+//   X3: [30, 42]   (Index6)   ← 第3元素
+// X1[40,52] 与 X2[10,22] 不重叠 → 有缺口 → 情况二。
+//
+// 转折点(Index4)之后，新向上线段的第二特征序列 = 向下笔，需形成顶分型：
+//   D1: [34, 48]   (Index5)   ← 左
+//   D2: [50, 62]   (Index7)   ← 中（high 最高、low 最高）
+//   D3: [38, 52]   (Index9)   ← 右
+func TestSegment_Type2_Down_SecondSeqConfirms(t *testing.T) {
 	sp := NewSegmentProcessor()
 
-	// 构造向上线段 + 向下笔，使特征序列(向下笔)形成顶分型。
-	// 要求：
-	//   1. 前两根向上笔: bi0, bi1
-	//   2. bi2 是向下笔, 但不直接破坏 (bi2.Low > bi0.Low)
-	//   3. bi3 也是向下笔, 且 high 比 bi2 高 (特征序列顶分型的中间)
-	//   4. bi4 也是向下笔, 且 high 比 bi3 低 (特征序列顶分型的右)
-	//   5. bi3 和 bi2、bi4 之间不能发生包含合并 (否则特征序列元素数不够)
-	//
-	// 特征序列(向下笔): [bi2, bi3, bi4]
-	// bi2 范围: [33, 42]  high=42
-	// bi3 范围: [35, 43]  high=43 ← 最高, 形成顶分型中间
-	// bi4 范围: [30, 40]  high=40
-	// 三个元素互不包含: ✅ (验证见下)
-
 	strokes := []*stroke{
-		{Index: 0, Direction: types.DirectionUp, StartPrice: 10, EndPrice: 30, High: 32, Low: 8, Confirmed: true},
-		{Index: 1, Direction: types.DirectionUp, StartPrice: 30, EndPrice: 45, High: 48, Low: 28, Confirmed: true},
-		// 以下为向下笔 (特征序列)
-		{Index: 2, Direction: types.DirectionDown, StartPrice: 45, EndPrice: 38, High: 48, Low: 33, Confirmed: true}, // bi2: [33, 42] → 修正: [33,48]
-		{Index: 3, Direction: types.DirectionDown, StartPrice: 38, EndPrice: 30, High: 43, Low: 35, Confirmed: true}, // bi3: [35, 43]
-		{Index: 4, Direction: types.DirectionDown, StartPrice: 30, EndPrice: 25, High: 40, Low: 28, Confirmed: true}, // bi4: [28, 40]
-	}
-	// 修正 bi2: StartPrice=45, EndPrice=38, High=max(45,38,48?) = 48, Low=min(45,38,33) = 33
-	// 所以 bi2 范围: [33, 48]
-	// bi3: [35, 43]
-	// Containment: bi3.high(43) <= bi2.high(48) ✓, bi3.low(35) >= bi2.low(33)? 35 >= 33 ✓
-	// 所以 bi3 被 bi2 包含! 不行, bi3 会被合并掉。
-	//
-	// 让我重新调整: 让 bi3 不被 bi2 包含
-	// bi3.low > bi2.low 且 bi3.high < bi2.high → bi3 被 bi2 包含 (第一条件)
-	// 需要 bi3.high > bi2.high OR bi3.low < bi2.low
-
-	// 重新设计:
-	// bi2: [30, 44]  (high=44, low=30)  ← 调整
-	// bi3: [35, 46]  (high=46, low=35)  ← high更高 + low更高 → 不被包含!
-	// bi4: [28, 40]  (high=40, low=28)  ← high更低, 低点更低
-
-	// 重建 strokes
-	strokes = []*stroke{
-		{Index: 0, Direction: types.DirectionUp, StartPrice: 10, EndPrice: 30, High: 32, Low: 8, Confirmed: true},
-		{Index: 1, Direction: types.DirectionUp, StartPrice: 30, EndPrice: 45, High: 48, Low: 28, Confirmed: true},
-		// 向下笔
-		{Index: 2, Direction: types.DirectionDown, StartPrice: 48, EndPrice: 35, High: 48, Low: 30, Confirmed: true}, // bi2: [30, 48]
-		{Index: 3, Direction: types.DirectionDown, StartPrice: 35, EndPrice: 28, High: 46, Low: 33, Confirmed: true}, // bi3: [33, 46]
-		{Index: 4, Direction: types.DirectionDown, StartPrice: 28, EndPrice: 22, High: 40, Low: 25, Confirmed: true}, // bi4: [25, 40]
-	}
-	// 验证包含关系:
-	// bi2: [30, 48], bi3: [33, 46]
-	// bi3.high(46) <= bi2.high(48) ✓, bi3.low(33) >= bi2.low(30) ✓ → bi3 被 bi2 包含! ❌
-
-	// 仍然被包含. 需要 bi3.low < bi2.low 或 bi3.high > bi2.high
-	// 让 bi3.high 更高: bi3=[33, 49], bi2=[30, 48]
-	// bi3.high(49) >= bi2.high(48) ✓ AND bi3.low(33) <= bi2.low(30)? 33 <= 30? No.
-	// 所以不被包含 ✅
-	// 但 bi3.low(33) > bi2.low(30), bi3.high(49) > bi2.high(48)
-	// 检查 bi3 是否包含 bi2: bi3.high(49) >= bi2.high(48) ✓ AND bi3.low(33) <= bi2.low(30)? 33 <= 30? No.
-	// 所以 bi3 不包含 bi2. 互不包含 ✅
-
-	strokes = []*stroke{
-		{Index: 0, Direction: types.DirectionUp, StartPrice: 10, EndPrice: 30, High: 35, Low: 8, Confirmed: true},
-		{Index: 1, Direction: types.DirectionUp, StartPrice: 30, EndPrice: 45, High: 50, Low: 28, Confirmed: true},
-		// 向下笔
-		{Index: 2, Direction: types.DirectionDown, StartPrice: 45, EndPrice: 35, High: 48, Low: 30, Confirmed: true}, // bi2: [30, 48]
-		{Index: 3, Direction: types.DirectionDown, StartPrice: 35, EndPrice: 28, High: 49, Low: 33, Confirmed: true}, // bi3: [33, 49] ← high最高
-		{Index: 4, Direction: types.DirectionDown, StartPrice: 28, EndPrice: 22, High: 42, Low: 25, Confirmed: true}, // bi4: [25, 42]
-	}
-	// 验证 bi4 vs bi3: bi4=[25,42], bi3=[33,49]
-	// bi4.high(42) <= bi3.high(49) ✓, bi4.low(25) >= bi3.low(33)? 25 >= 33? No.
-	// bi4.high(42) >= bi3.high(49)? No. 所以互不包含 ✅
-
-	// 特征序列: bi2[30,48], bi3[33,49], bi4[25,42]
-	// 顶分型: bi3.high=49 > bi2.high=48 ✓ AND bi3.high=49 > bi4.high=42 ✓ → 顶分型! ✅
-
-	segs := sp.Process("TEST_T2B", strokes)
-
-	t.Logf("已完成的线段: %d", len(segs))
-	for i, seg := range segs {
-		t.Logf("  线段 %d: 方向=%s 笔数=%d 确认=%v 价格=(%.0f,%.0f)",
-			i, seg.direction, len(seg.strokes), seg.confirmed,
-			seg.startPrice, seg.endPrice)
+		{Index: 0, Direction: types.DirectionDown, StartPrice: 60, EndPrice: 42, High: 62, Low: 40, Confirmed: true},
+		{Index: 1, Direction: types.DirectionDown, StartPrice: 42, EndPrice: 36, High: 44, Low: 34, Confirmed: true},
+		{Index: 2, Direction: types.DirectionUp, StartPrice: 36, EndPrice: 50, High: 52, Low: 40, Confirmed: true}, // X1 [40,52]
+		{Index: 3, Direction: types.DirectionDown, StartPrice: 50, EndPrice: 20, High: 22, Low: 18, Confirmed: true},
+		{Index: 4, Direction: types.DirectionUp, StartPrice: 20, EndPrice: 28, High: 22, Low: 10, Confirmed: true}, // X2 [10,22] 转折点
+		{Index: 5, Direction: types.DirectionDown, StartPrice: 28, EndPrice: 36, High: 48, Low: 34, Confirmed: true}, // D1 [34,48]
+		{Index: 6, Direction: types.DirectionUp, StartPrice: 36, EndPrice: 44, High: 42, Low: 30, Confirmed: true}, // X3 [30,42]
+		{Index: 7, Direction: types.DirectionDown, StartPrice: 44, EndPrice: 58, High: 62, Low: 50, Confirmed: true}, // D2 [50,62] 中点
+		{Index: 8, Direction: types.DirectionUp, StartPrice: 58, EndPrice: 50, High: 60, Low: 48, Confirmed: true},
+		{Index: 9, Direction: types.DirectionDown, StartPrice: 50, EndPrice: 44, High: 52, Low: 38, Confirmed: true}, // D3 [38,52]
 	}
 
-	state := sp.getState("TEST_T2B")
-	if state.current != nil {
-		t.Logf("当前线段: 方向=%s 笔数=%d", state.current.direction, len(state.current.strokes))
-	}
+	segs := sp.Process("TEST_DOWN", strokes)
 
-	// 验证情况二已触发 - 产生了一个已完成的线段
 	if len(segs) == 0 {
-		t.Log("注意: 当前构造未触发线段完成, 需要更复杂的特征序列模式")
-	} else {
-		t.Log("✅ 情况二线段破坏已确认")
+		t.Fatal("向下线段情况二第二特征序列出现分型后应确认, 实际无线段完成")
 	}
-}
-
-// ====== 特征序列底分型测试 (向下线段情况二) ======
-
-// TestSegment_Type2Break_Down 验证向下线段中特征序列底分型确认破坏。
-func TestSegment_Type2Break_Down(t *testing.T) {
-	sp := NewSegmentProcessor()
-
-	// 向下线段 + 向上笔，使特征序列(向上笔)形成底分型。
-	strokes := []*stroke{
-		// 向下线段
-		{Index: 0, Direction: types.DirectionDown, StartPrice: 50, EndPrice: 35, High: 52, Low: 33, Confirmed: true},
-		{Index: 1, Direction: types.DirectionDown, StartPrice: 35, EndPrice: 25, High: 38, Low: 22, Confirmed: true},
-		// 向上笔 (特征序列)
-		{Index: 2, Direction: types.DirectionUp, StartPrice: 22, EndPrice: 30, High: 32, Low: 20, Confirmed: true}, // [20, 32]
-		{Index: 3, Direction: types.DirectionUp, StartPrice: 30, EndPrice: 35, High: 37, Low: 28, Confirmed: true}, // [28, 37]
-		{Index: 4, Direction: types.DirectionUp, StartPrice: 35, EndPrice: 28, High: 38, Low: 32, Confirmed: true}, // [32, 38]
+	completed := segs[0]
+	if completed.direction != types.DirectionDown {
+		t.Errorf("已完成线段方向期望 down, 实际 %v", completed.direction)
 	}
-
-	_ = strokes
-	// 特征序列 = 向上笔
-	// 底分型: 中间元素 low 最低
-	// bi2 low=20, bi3 low=28, bi4 low=32 → bi2 的 low(20) 最低, 但 bi2 是左元素不是中!
-	// 需要中间元素的 low 最低:
-	// bi2 low=30, bi3 low=20, bi4 low=28 → bi3 low(20) < bi2 low(30) AND bi3 low(20) < bi4 low(28) → 底分型!
-	// 但也要检查包含关系...
-	// bi2=[?], bi3=[?] 互不包含
-
-	strokes = []*stroke{
-		{Index: 0, Direction: types.DirectionDown, StartPrice: 50, EndPrice: 35, High: 55, Low: 33, Confirmed: true},
-		{Index: 1, Direction: types.DirectionDown, StartPrice: 35, EndPrice: 25, High: 38, Low: 22, Confirmed: true},
-		// 向上笔 (特征序列)
-		{Index: 2, Direction: types.DirectionUp, StartPrice: 22, EndPrice: 32, High: 35, Low: 28, Confirmed: true}, // [28, 35]
-		{Index: 3, Direction: types.DirectionUp, StartPrice: 32, EndPrice: 28, High: 34, Low: 20, Confirmed: true}, // [20, 34] ← low最低!
-		{Index: 4, Direction: types.DirectionUp, StartPrice: 28, EndPrice: 35, High: 38, Low: 26, Confirmed: true}, // [26, 38]
+	if !completed.confirmed {
+		t.Error("已完成线段 confirmed 应为 true")
 	}
-	// 验证包含:
-	// bi2=[28,35], bi3=[20,34]
-	// bi3.high(34) <= bi2.high(35) ✓ AND bi3.low(20) >= bi2.low(28)? 20 >= 28? No.
-	// bi3.high(34) >= bi2.high(35)? No.
-	// 互不包含 ✅
-	//
-	// bi3=[20,34], bi4=[26,38]
-	// bi4.high(38) <= bi3.high(34)? No. bi4.high(38) >= bi3.high(34) ✓ AND bi4.low(26) <= bi3.low(20)? 26 <= 20? No.
-	// 互不包含 ✅
-	//
-	// 底分型: bi3.low=20 < bi2.low=28 ✓ AND bi3.low=20 < bi4.low=26 ✓ → 底分型! ✅
-
-	segs := sp.Process("TEST_T2B_DOWN", strokes)
-
-	t.Logf("已完成的线段: %d", len(segs))
-	for i, seg := range segs {
-		t.Logf("  线段 %d: 方向=%s 笔数=%d 确认=%v 价格=(%.0f,%.0f)",
-			i, seg.direction, len(seg.strokes), seg.confirmed,
-			seg.startPrice, seg.endPrice)
+	// 向下线段必须结束于向下笔
+	lastStroke := completed.strokes[len(completed.strokes)-1]
+	if lastStroke.Direction != types.DirectionDown {
+		t.Errorf("向下线段应结束于向下笔, 实际终点笔方向 %v", lastStroke.Direction)
 	}
-
-	if len(segs) > 0 {
-		t.Log("✅ 向下线段情况二已确认")
-	}
-}
-
-// ====== 特征序列包含处理 + 分型测试 ======
-
-// TestFeatureSeq_ContainmentLeadingToFractal 验证包含处理导致特征序列形成分型。
-func TestFeatureSeq_ContainmentLeadingToFractal(t *testing.T) {
-	// 场景: 4 根向下笔经过包含处理后变成 3 根,形成顶分型
-	bis := []*stroke{
-		mkStroke(0, 10, 5, 20, 15, types.DirectionUp),
-		mkStroke(1, 20, 15, 30, 25, types.DirectionUp),
-		// 向下笔 (特征序列)
-		{Index: 2, Direction: types.DirectionDown, StartPrice: 30, EndPrice: 25, High: 32, Low: 23, Confirmed: true}, // [23, 32]
-		{Index: 3, Direction: types.DirectionDown, StartPrice: 25, EndPrice: 22, High: 28, Low: 20, Confirmed: true}, // [20, 28] 被包含?
-		// bi3 vs bi2: bi3.high(28) <= bi2.high(32) ✓ AND bi3.low(20) >= bi2.low(23)? 20 >= 23? No.
-		// 不被包含.
-		{Index: 4, Direction: types.DirectionDown, StartPrice: 22, EndPrice: 18, High: 35, Low: 16, Confirmed: true}, // [16, 35]
-		// bi4 vs bi3: bi4.high(35) > bi3.high(28). bi4.low(16) < bi3.low(20).
-		// bi4.high(35) >= bi3.high(28) ✓ AND bi4.low(16) <= bi3.low(20) ✓ → bi4 包含 bi3!
-		// 向下合并: min(35,28)=28, min(16,20)=16. bi3 被合并进 bi3 → bi3 becomes [16, 28]
-	}
-
-	_ = bis
-	// 经过 bi4 后包含处理, bi3 和 bi4 合并:
-	// 原始: bi2[23,32], bi3[20,28], bi4[16,35]
-	// bi4 包含 bi3, 向下合并: bi3 = [min(35,28)=28? wait, r=bi4, last=bi3
-	// For down segment → mergeUp = false → down merge
-	// if r.high < last.high { last.high = r.high } → 35 < 28? No. So last.high stays 28.
-	// if r.low < last.low { last.low = r.low } → 16 < 20? Yes. last.low = 16.
-	// So bi3 becomes [16, 28]. bi4 is contained.
-	// After merge: bi2[23,32], bi3[16,28] → only 2 elements, no fractal.
-
-	// Hmm, that's still not forming a fractal through containment.
-	// Let me try a different approach where containment REDUCES elements to exactly 3 that form a fractal.
-
-	t.Log("跳过 - 需要通过更精确的构造来触发包含处理后的特征序列分型")
+	t.Logf("向下线段情况二确认成功: 方向=%v 笔数=%d 起止=(%.0f,%.0f)",
+		completed.direction, len(completed.strokes), completed.startPrice, completed.endPrice)
 }
 
 // ====== 辅助功能测试 ======
