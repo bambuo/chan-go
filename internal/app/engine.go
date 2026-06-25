@@ -89,6 +89,10 @@ func (e *Engine) consume(ctx context.Context, stream string) {
 				slog.Info("流消费已停止", "stream", stream)
 				return
 			}
+			if errors.Is(err, redis.Nil) {
+				// 阻塞超时无新消息，正常继续
+				continue
+			}
 			if strings.Contains(err.Error(), "NOGROUP") {
 				slog.Warn("消费组不存在，尝试重建", "stream", stream)
 				if e := e.createGroup(ctx, stream); e != nil {
