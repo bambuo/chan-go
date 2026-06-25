@@ -5,14 +5,16 @@ const readline = require('readline');
 // ====== 用法 ======
 //   SYMBOL=BTCUSDT node scripts/feed.js
 //   SYMBOL=ETHUSDT PLAY_SPEED=60 END_LINE=50000 node scripts/feed.js
+//   SYMBOL=BNBUSDT PUSH_INTERVAL_MS=100 node scripts/feed.js   # 每 100ms 推送一根
 
 const SYMBOL = process.env.SYMBOL || 'BNBUSDT';
 const CSV_FILE = `${SYMBOL}_1m.csv`;
 const CSV_PATH = process.env.CSV_PATH || path.join(__dirname, '..', 'docs', 'dataset', CSV_FILE);
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const STREAM_KEY = `chan:klines:${SYMBOL}`;
+const STREAM_KEY = `trade:kline:${SYMBOL}`;
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '100', 10);
 const PLAY_SPEED = parseFloat(process.env.PLAY_SPEED || '0');
+const PUSH_INTERVAL_MS = parseInt(process.env.PUSH_INTERVAL_MS || '0', 10);
 const START_LINE = parseInt(process.env.START_LINE || '1', 10);
 const END_LINE = parseInt(process.env.END_LINE || '0', 10);
 
@@ -72,13 +74,14 @@ async function main() {
     process.exit(1);
   }
 
-  const info = await redis.exists(STREAM_KEY);
-  console.log(`📊 Symbol: ${SYMBOL}`);
-  console.log(`📂 CSV: ${CSV_PATH}`);
-  console.log(`📤 Stream: ${STREAM_KEY} ${info ? '(已存在)' : '(将新建)'}`);
-  console.log(`⚙️  批次: ${BATCH_SIZE}, 倍速: ${PLAY_SPEED > 0 ? PLAY_SPEED+'x' : '最快'}`);
-  console.log(`  行范围: ${START_LINE} → ${END_LINE || '文件尾'}`);
-  console.log('---');
+	const info = await redis.exists(STREAM_KEY);
+	console.log(`📊 Symbol: ${SYMBOL}`);
+	console.log(`📂 CSV: ${CSV_PATH}`);
+	console.log(`📤 Stream: ${STREAM_KEY} ${info ? '(已存在)' : '(将新建)'}`);
+	console.log(`⚙️  批次: ${BATCH_SIZE}, 倍速: ${PLAY_SPEED > 0 ? PLAY_SPEED+'x' : '最快'}`);
+	if (PUSH_INTERVAL_MS > 0) console.log(`⏱️  推送间隔: ${PUSH_INTERVAL_MS}ms`);
+	console.log(`  行范围: ${START_LINE} → ${END_LINE || '文件尾'}`);
+	console.log('---');
 
   let total = 0, pushed = 0, skipped = 0, batch = [];
   let firstTS = 0, lastTS = 0;
@@ -151,6 +154,10 @@ async function flushBatch(batch) {
   if (PLAY_SPEED > 0 && batch.length >= 2) {
     const gap = (parseInt(batch[batch.length-1].ts) - parseInt(batch[0].ts)) / PLAY_SPEED;
     if (gap > 0) await sleep(gap);
+  }
+
+  if (PUSH_INTERVAL_MS > 0) {
+    await sleep(PUSH_INTERVAL_MS);
   }
 }
 
