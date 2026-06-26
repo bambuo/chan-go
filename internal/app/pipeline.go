@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/redis/go-redis/v9"
@@ -70,6 +71,11 @@ func (p *Pipeline) Start(ctx context.Context, wg *sync.WaitGroup) {
 			if ctx.Err() != nil {
 				p.log.Info("处理管线已停止")
 				return
+			}
+			if strings.Contains(err.Error(), "NOGROUP") {
+				p.log.Warn("消费组不存在，尝试重建", "stream", p.stream)
+				// 重建消费组后继续循环等待
+				continue
 			}
 			p.log.Error("读取 Stream 失败", "error", err)
 			continue
