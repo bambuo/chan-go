@@ -33,14 +33,21 @@ func (r *Ring[T]) Total() int64 {
 	return r.total
 }
 
-// Append 追加一个元素，若已满则覆盖最旧数据。
-func (r *Ring[T]) Append(v T) {
+// Append 追加一个元素，若已满则覆盖最旧数据，并返回被覆盖的元素。
+func (r *Ring[T]) Append(v T) (evicted T, ok bool) {
+	// 如果已满，head 指向的位置即将被覆盖
+	if r.count == r.cap {
+		evicted = r.data[r.head]
+		ok = true
+	}
+
 	r.data[r.head] = v
 	r.head = (r.head + 1) % r.cap
 	if r.count < r.cap {
 		r.count++
 	}
 	r.total++
+	return
 }
 
 // Last 返回最后一个元素（最新写入），若为空返回零值和 false。

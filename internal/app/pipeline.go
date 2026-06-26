@@ -23,7 +23,7 @@ type Pipeline struct {
 
 	// 缠论算法状态
 	mu        sync.Mutex
-	chanLines *ChanKLineSequence // 缠论 K 线序列
+	chanLines *ChanKLineSequence // 缠论 K 线序列（包含持久化）
 }
 
 // NewPipeline 创建一个新的处理管线实例。
@@ -37,7 +37,7 @@ func NewPipeline(symbol, stream string, rdb *redis.Client, log *logger.Logger, g
 		log:       log.With("symbol", symbol),
 		group:     group,
 		consumer:  consumer,
-		chanLines: NewChanKLineSequence(),
+		chanLines: NewChanKLineSequence(rdb, symbol),
 	}
 }
 
@@ -158,7 +158,7 @@ func (p *Pipeline) processKLine(ctx context.Context, kline *KLine) error {
 	defer p.mu.Unlock()
 
 	// 1. 包含处理（委托给 ChanKLineSequence）
-	p.chanLines.ProcessInclusion(kline)
+	p.chanLines.ProcessInclusion(ctx, kline)
 
 	// 2. 分型识别（待实现）
 	// 3. 笔识别（待实现）

@@ -1,6 +1,12 @@
 // Package app 负责系统组装与生命周期管理。
 package app
 
+import (
+	"context"
+
+	"github.com/redis/go-redis/v9"
+)
+
 // KLine 表示一根原始 K 线数据。
 type KLine struct {
 	// Symbol 是交易对名称，如 BTCUSDT。
@@ -29,73 +35,98 @@ type ChanKLine struct {
 	Direction int `json:"direction"`
 	// Fractal 是分型类型：1 表示顶分型，-1 表示底分型，0 表示未知。
 	Fractal int `json:"fractal"`
-	// Index 是在序列中的索引。
-	Index int `json:"index"`
+	// Timestamp 是该 K 线对应的最后一根原始 K 线时间戳（毫秒）。
+	Timestamp int64 `json:"ts"`
 }
 
-// ChanKLineSequence 是缠论 K 线序列，负责管理包含处理。
-// 内部使用环形缓冲区，固定容量，新数据自动覆盖最旧数据。
+// ChanKLineSequence 是缠论 K 线序列，负责包含处理与持久化。
+// 内部含两个环形缓冲区，职责隔离：
+//   - mergedRing (容量 1)：保留最后一根合并 K 线，用于包含判定与持久化触发
+//   - nonIncRing (容量 2)：保留最后两根非包含 K 线，用于方向更新
 type ChanKLineSequence struct {
-	ring *Ring[*ChanKLine]
+	mergedRing *Ring[*ChanKLine] // 合并 K 线序列（结果序列）
+	nonIncRing *Ring[*ChanKLine] // 非包含 K 线序列（方向判定用）
+	store      *ChanKLineStore   // Redis 持久化
 }
 
 // NewChanKLineSequence 创建一个新的缠论 K 线序列。
-func NewChanKLineSequence() *ChanKLineSequence {
+func NewChanKLineSequence(rdb *redis.Client, symbol string) *ChanKLineSequence {
 	return &ChanKLineSequence{
-		ring: NewRing[*ChanKLine](1000), // 默认容量 1000
+		mergedRing: NewRing[*ChanKLine](1), // 仅需保留结果序列中最后一根
+		nonIncRing: NewRing[*ChanKLine](2), // 仅需非包含序列中最后两个元素
+		store:      NewChanKLineStore(rdb, symbol),
 	}
 }
 
-// Len 返回序列长度。
-func (s *ChanKLineSequence) Len() int {
-	return s.ring.Len()
-}
-
-// Last 返回最后一根缠论 K 线，序列为空时返回 nil。
+// Last 返回最后一根合并 K 线，供包含判定使用。
 func (s *ChanKLineSequence) Last() *ChanKLine {
-	v, ok := s.ring.Last()
+	v, ok := s.mergedRing.Last()
 	if !ok {
 		return nil
 	}
 	return v
 }
 
+// Len 返回已产生的合并 K 线总数。
+func (s *ChanKLineSequence) Len() int {
+	return s.mergedRing.Len()
+}
+
 // ProcessInclusion 执行包含处理算法，将原始 K 线加入序列。
 // 根据缠论原文，处理 K 线之间的包含关系。
-func (s *ChanKLineSequence) ProcessInclusion(kline *KLine) {
+// 当合并 K 线移出内存窗口时自动持久化到 Redis。
+func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) {
 	// 如果没有缠论 K 线，直接添加第一根
-	last, ok := s.ring.Last()
+	last, ok := s.mergedRing.Last()
 	if !ok {
 		chanLine := &ChanKLine{
 			High:      kline.High,
 			Low:       kline.Low,
 			Direction: 1, // 初始方向向上
-			Index:     0,
+			Timestamp: kline.Timestamp,
 		}
-		s.ring.Append(chanLine)
+		s.mergedRing.Append(chanLine)
+		s.nonIncRing.Append(chanLine)
 		return
 	}
 
 	// 判断包含关系
 	if isInclusion(last, kline) {
-		// 存在包含关系，进行合并
+		// 存在包含关系，进行合并（原地更新，不触发覆盖）
 		mergeChanKLine(last, kline)
 	} else {
-		// 不存在包含关系，直接添加
+		// 不存在包含关系，产生新缠论 K 线
+		// 同时加入 mergedRing（用于包含判定）和 nonIncRing（用于方向更新）
 		chanLine := &ChanKLine{
 			High:      kline.High,
 			Low:       kline.Low,
-			Direction: last.Direction, // 保持当前方向
-			Index:     s.ring.Len(),
+			Direction: last.Direction, // 暂用上一根方向，随后更新
+			Timestamp: kline.Timestamp,
 		}
-		s.ring.Append(chanLine)
 
-		// 更新方向
+		// mergedRing 满时 old 被覆盖 → 持久化
+		if evicted, ok := s.mergedRing.Append(chanLine); ok {
+			s.persistEvicted(ctx, evicted)
+		}
+
+		// nonIncRing 满时 old 直接丢弃（不需要持久化，已在 mergedRing 被覆盖时持久化过）
+		s.nonIncRing.Append(chanLine)
+
+		// 从非包含序列更新方向
 		s.updateDirection()
 	}
 }
 
-// isInclusion 判断缠论 K 线与原始 K 线是否存在包含关系。
+// persistEvicted 将被覆盖的合并 K 线持久化到 Redis。
+func (s *ChanKLineSequence) persistEvicted(ctx context.Context, evicted *ChanKLine) {
+	lines := []*ChanKLine{evicted}
+	if err := s.store.Save(ctx, lines); err != nil {
+		// 持久化失败不影响主流程，下次被覆盖时重试
+		return
+	}
+}
+
+// isInclusion 判断结果序列最后一根合并 K 线与原始 K 线是否存在包含关系。
 // 包含关系：当前高 <= 前一根高 且 当前低 >= 前一根低，或者
 // 当前高 >= 前一根高 且 当前低 <= 前一根低
 func isInclusion(chanLine *ChanKLine, kline *KLine) bool {
@@ -103,7 +134,7 @@ func isInclusion(chanLine *ChanKLine, kline *KLine) bool {
 		(kline.High >= chanLine.High && kline.Low <= chanLine.Low)
 }
 
-// mergeChanKLine 合并 K 线到缠论 K 线。
+// mergeChanKLine 合并原始 K 线到合并 K 线。
 // 根据方向决定合并方式：
 // - 向上：取两边高点中的更高者、低点中的更高者
 // - 向下：取两边高点中的更低者、低点中的更低者
@@ -117,20 +148,22 @@ func mergeChanKLine(chanLine *ChanKLine, kline *KLine) {
 		chanLine.High = min(chanLine.High, kline.High)
 		chanLine.Low = min(chanLine.Low, kline.Low)
 	}
+	// 更新时间戳为最后一根原始 K 线的时间戳
+	chanLine.Timestamp = kline.Timestamp
 }
 
-// updateDirection 更新方向。
+// updateDirection 从非包含序列更新当前方向。
 // 以非包含序列中最后两个元素为基准判定方向：
 // - 若第二根高点 > 第一根高点 且 第二根低点 > 第一根低点 → 方向更新为向上
 // - 若第二根高点 < 第一根高点 且 第二根低点 < 第一根低点 → 方向更新为向下
 // - 否则方向保持不变
 func (s *ChanKLineSequence) updateDirection() {
-	if s.ring.Len() < 2 {
+	if s.nonIncRing.Len() < 2 {
 		return
 	}
 
-	current, _ := s.ring.At(s.ring.Len() - 1)
-	previous, _ := s.ring.At(s.ring.Len() - 2)
+	current, _ := s.nonIncRing.At(s.nonIncRing.Len() - 1)
+	previous, _ := s.nonIncRing.At(s.nonIncRing.Len() - 2)
 
 	if current.High > previous.High && current.Low > previous.Low {
 		current.Direction = 1 // 向上
