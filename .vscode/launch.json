@@ -12,7 +12,7 @@
                 "CL_LOG_LEVEL": "debug",
                 "CL_LOG_JSON": "true"
             },
-            "args": []
+            "args": ["server"]
         }
     ]
 }

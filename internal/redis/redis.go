@@ -4,10 +4,10 @@ package redis
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"trade/internal/config"
 )
@@ -47,7 +47,7 @@ func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
 		return nil, fmt.Errorf("Redis 连通性检查失败: %w", err)
 	}
 
-	slog.Info("Redis 连接已建立",
+	zap.S().Infow("Redis 连接已建立",
 		"addr", client.Options().Addr,
 		"db", client.Options().DB,
 	)
@@ -63,6 +63,6 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Close 优雅关闭 Redis 连接.
 func (c *Client) Close() error {
-	slog.Info("正在关闭 Redis 连接")
+	zap.S().Info("正在关闭 Redis 连接")
 	return c.Client.Close()
 }
