@@ -3,7 +3,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -27,20 +26,22 @@ type Engine struct {
 	consumer string
 	interval time.Duration
 
-	mu     sync.Mutex
-	active map[string]struct{}
-	wg     sync.WaitGroup
+	mu        sync.Mutex
+	active    map[string]struct{}
+	pipelines map[string]*Pipeline
+	wg        sync.WaitGroup
 }
 
 // New 创建一个引擎实例。
 func New(rdb *redis.Client, log *logger.Logger) *Engine {
 	return &Engine{
-		log:      log,
-		rdb:      rdb,
-		group:    defaultGroup,
-		consumer: defaultConsumer,
-		interval: scanInterval,
-		active:   make(map[string]struct{}),
+		log:       log,
+		rdb:       rdb,
+		group:     defaultGroup,
+		consumer:  defaultConsumer,
+		interval:  scanInterval,
+		active:    make(map[string]struct{}),
+		pipelines: make(map[string]*Pipeline),
 	}
 }
 
@@ -75,10 +76,12 @@ func (e *Engine) discoverLoop(ctx context.Context) {
 	}
 }
 
-// discover 扫描 trade:kline:* 模式，为新发现的流创建消费组并启动消费。
+// discover 扫描 trade:kline:* 模式，为新发现的流创建消费组并启动处理管线。
 func (e *Engine) discover(ctx context.Context) {
 	var cursor uint64
 	for {
+		// keys 是匹配模式的 Redis key 列表，格式如 []string{"trade:kline:BTCUSDT", ...}
+		// nextCursor 是下一轮扫描的游标，为 0 时表示扫描结束
 		keys, nextCursor, err := e.rdb.Scan(ctx, cursor, "trade:kline:*", 100).Result()
 		if err != nil {
 			e.log.Error("扫描 Stream 失败", "error", err)
@@ -96,9 +99,20 @@ func (e *Engine) discover(ctx context.Context) {
 					e.log.Error("创建消费组失败", "stream", key, "error", err)
 					continue
 				}
+
+				// 从流名称中提取交易对符号
+				symbol := extractSymbol(key)
+				if symbol == "" {
+					e.log.Error("无法从流名称中提取交易对符号", "stream", key)
+					continue
+				}
+
+				// 创建并启动处理管线
+				pipeline := NewPipeline(symbol, key, e.rdb, e.log, e.group, e.consumer)
+				e.pipelines[key] = pipeline
 				e.wg.Add(1)
-				go e.consume(ctx, key)
-				e.log.Info("发现新流，已启动消费", "stream", key)
+				go pipeline.Start(ctx, &e.wg)
+				e.log.Info("发现新流，已启动处理管线", "stream", key, "symbol", symbol)
 			} else {
 				e.mu.Unlock()
 			}
@@ -111,6 +125,16 @@ func (e *Engine) discover(ctx context.Context) {
 	}
 }
 
+// extractSymbol 从流名称中提取交易对符号。
+// 流名称格式：trade:kline:BTCUSDT
+func extractSymbol(stream string) string {
+	parts := strings.Split(stream, ":")
+	if len(parts) >= 3 {
+		return parts[2]
+	}
+	return ""
+}
+
 // createGroup 创建 Redis Stream 消费组，已存在则忽略。
 func (e *Engine) createGroup(ctx context.Context, stream string) error {
 	err := e.rdb.XGroupCreateMkStream(ctx, stream, e.group, "$").Err()
@@ -118,58 +142,4 @@ func (e *Engine) createGroup(ctx context.Context, stream string) error {
 		return nil
 	}
 	return err
-}
-
-// consume 持续从指定 Stream 读取并处理 K 线消息。
-func (e *Engine) consume(ctx context.Context, stream string) {
-	defer e.wg.Done()
-	e.log.Info("开始监听流", "stream", stream)
-
-	for {
-		if ctx.Err() != nil {
-			e.log.Info("流消费已停止", "stream", stream)
-			return
-		}
-
-		msgs, err := e.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
-			Group:    e.group,
-			Consumer: e.consumer,
-			Streams:  []string{stream, ">"},
-			Count:    10,
-			Block:    time.Second,
-		}).Result()
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				e.log.Info("流消费已停止", "stream", stream)
-				return
-			}
-			if errors.Is(err, redis.Nil) {
-				continue
-			}
-			if strings.Contains(err.Error(), "NOGROUP") {
-				e.log.Warn("消费组不存在，尝试重建", "stream", stream)
-				if cerr := e.createGroup(ctx, stream); cerr != nil {
-					e.log.Error("重建消费组失败", "stream", stream, "error", cerr)
-				}
-				continue
-			}
-			e.log.Error("读取 Stream 失败", "stream", stream, "error", err)
-			continue
-		}
-
-		for _, result := range msgs {
-			for _, msg := range result.Messages {
-				e.log.Info("收到 K 线",
-					"stream", stream,
-					"id", msg.ID,
-					"symbol", msg.Values["symbol"],
-					"open", msg.Values["open"],
-					"high", msg.Values["high"],
-					"low", msg.Values["low"],
-					"close", msg.Values["close"],
-					"ts", msg.Values["ts"],
-				)
-			}
-		}
-	}
 }
