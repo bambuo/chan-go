@@ -23,12 +23,28 @@ func NewChanKLineStore(rdb *redis.Client, symbol string) *ChanKLineStore {
 	}
 }
 
-// key 返回 Redis key：trade:kline:chan:{symbol}
+// key 返回合并 K 线 Redis key：trade:kline:chan:{symbol}
 func (s *ChanKLineStore) key() string {
 	return fmt.Sprintf("trade:kline:chan:%s", s.symbol)
 }
 
-// Save 将缠论 K 线列表追加到 Redis ZSET，以时间戳为 score。
+// fractalKey 返回分型 Redis key：trade:kline:{symbol}:fractal
+func (s *ChanKLineStore) fractalKey() string {
+	return fmt.Sprintf("trade:kline:%s:fractal", s.symbol)
+}
+
+// SaveFractal 将已确认分型的缠论 K 线写入 Redis ZSET。
+func (s *ChanKLineStore) SaveFractal(ctx context.Context, kline *ChanKLine) error {
+	data, err := json.Marshal(kline)
+	if err != nil {
+		return fmt.Errorf("序列化失败: %w", err)
+	}
+
+	return s.rdb.ZAdd(ctx, s.fractalKey(), redis.Z{
+		Score:  float64(kline.Timestamp),
+		Member: data,
+	}).Err()
+}
 func (s *ChanKLineStore) Save(ctx context.Context, lines []*ChanKLine) error {
 	if len(lines) == 0 {
 		return nil
@@ -80,4 +96,9 @@ func (s *ChanKLineStore) Load(ctx context.Context, count int64) ([]*ChanKLine, e
 // Clear 清空 Redis 中的缠论 K 线数据。
 func (s *ChanKLineStore) Clear(ctx context.Context) error {
 	return s.rdb.Del(ctx, s.key()).Err()
+}
+
+// ClearFractal 清空分型数据。
+func (s *ChanKLineStore) ClearFractal(ctx context.Context) error {
+	return s.rdb.Del(ctx, s.fractalKey()).Err()
 }

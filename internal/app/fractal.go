@@ -1,21 +1,28 @@
 // Package app 负责系统组装与生命周期管理。
 package app
 
+import "context"
+
+// FractalCallback 是分型识别回调，检测到分型时由上层处理持久化。
+type FractalCallback func(ctx context.Context, chanLine *ChanKLine)
+
 // FractalDetector 是分型识别器，负责从非包含合并 K 线序列中识别顶底分型。
 // 输入源必须为经过包含处理后的非包含 K 线序列。
 type FractalDetector struct {
-	ring *Ring[*ChanKLine] // 容量 3，滑动窗口
+	ring      *Ring[*ChanKLine] // 容量 3，滑动窗口
+	onFractal FractalCallback   // 分型回调
 }
 
 // NewFractalDetector 创建一个新的分型识别器。
-func NewFractalDetector() *FractalDetector {
+func NewFractalDetector(onFractal FractalCallback) *FractalDetector {
 	return &FractalDetector{
-		ring: NewRing[*ChanKLine](3), // 分型判定需要连续三根合并 K 线
+		ring:      NewRing[*ChanKLine](3), // 分型判定需要连续三根合并 K 线
+		onFractal: onFractal,
 	}
 }
 
 // Feed 输入一根新的非包含合并 K 线，触发分型检测。
-func (fd *FractalDetector) Feed(chanLine *ChanKLine) {
+func (fd *FractalDetector) Feed(ctx context.Context, chanLine *ChanKLine) {
 	fd.ring.Append(chanLine)
 
 	// 数量不足 3 根时无法形成分型
@@ -23,12 +30,12 @@ func (fd *FractalDetector) Feed(chanLine *ChanKLine) {
 		return
 	}
 
-	fd.detect()
+	fd.detect(ctx)
 }
 
 // detect 检测最近三根合并 K 线是否形成分型，标记中间 K 线。
 // 根据缠论原文，分型一经识别即立即确认。
-func (fd *FractalDetector) detect() {
+func (fd *FractalDetector) detect(ctx context.Context) {
 	left, _ := fd.ring.At(0)
 	mid, _ := fd.ring.At(1)
 	right, _ := fd.ring.At(2)
@@ -37,6 +44,9 @@ func (fd *FractalDetector) detect() {
 	if mid.High > left.High && mid.High > right.High &&
 		mid.Low > left.Low && mid.Low > right.Low {
 		mid.Fractal = FractalTop
+		if fd.onFractal != nil {
+			fd.onFractal(ctx, mid)
+		}
 		return
 	}
 
@@ -44,6 +54,9 @@ func (fd *FractalDetector) detect() {
 	if mid.Low < left.Low && mid.Low < right.Low &&
 		mid.High < left.High && mid.High < right.High {
 		mid.Fractal = FractalBottom
+		if fd.onFractal != nil {
+			fd.onFractal(ctx, mid)
+		}
 		return
 	}
 }

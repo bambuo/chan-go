@@ -71,11 +71,15 @@ type ChanKLineSequence struct {
 
 // NewChanKLineSequence 创建一个新的缠论 K 线序列。
 func NewChanKLineSequence(rdb *redis.Client, symbol string) *ChanKLineSequence {
+	st := NewChanKLineStore(rdb, symbol)
 	return &ChanKLineSequence{
 		mergedRing: NewRing[*ChanKLine](1), // 仅需保留结果序列中最后一根
 		nonIncRing: NewRing[*ChanKLine](2), // 仅需非包含序列中最后两个元素
-		store:      NewChanKLineStore(rdb, symbol),
-		fractal:    NewFractalDetector(),
+		store:      st,
+		fractal: NewFractalDetector(func(ctx context.Context, cl *ChanKLine) {
+			// 分型识别时立即写入分型 ZSET
+			_ = st.SaveFractal(ctx, cl)
+		}),
 	}
 }
 
@@ -108,7 +112,7 @@ func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) 
 		}
 		s.mergedRing.Append(chanLine)
 		s.nonIncRing.Append(chanLine)
-		s.fractal.Feed(chanLine)
+		s.fractal.Feed(ctx, chanLine)
 		return
 	}
 
@@ -138,7 +142,7 @@ func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) 
 		s.updateDirection()
 
 		// 送入分型识别器
-		s.fractal.Feed(chanLine)
+		s.fractal.Feed(ctx, chanLine)
 	}
 }
 
