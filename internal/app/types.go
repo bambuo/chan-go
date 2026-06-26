@@ -51,7 +51,7 @@ type ChanKLine struct {
 	// Direction 是方向，取值为 DirectionUp 或 DirectionDown。
 	Direction Direction `json:"direction"`
 	// Fractal 是分型类型，取值为 FractalNone / FractalTop / FractalBottom。
-	Fractal Fractal `json:"fractal"`
+	Fractal Fractal `json:"fractal,omitempty"`
 	// Timestamp 是该 K 线对应的最后一根原始 K 线时间戳（毫秒）。
 	Timestamp int64 `json:"ts"`
 }
