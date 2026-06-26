@@ -74,7 +74,9 @@ func (p *Pipeline) Start(ctx context.Context, wg *sync.WaitGroup) {
 			}
 			if strings.Contains(err.Error(), "NOGROUP") {
 				p.log.Warn("消费组不存在，尝试重建", "stream", p.stream)
-				// 重建消费组后继续循环等待
+				if cerr := p.rdb.XGroupCreateMkStream(ctx, p.stream, p.group, "$").Err(); cerr != nil && !strings.Contains(cerr.Error(), "BUSYGROUP") {
+					p.log.Error("重建消费组失败", "stream", p.stream, "error", cerr)
+				}
 				continue
 			}
 			p.log.Error("读取 Stream 失败", "error", err)
