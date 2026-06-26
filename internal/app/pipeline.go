@@ -161,10 +161,12 @@ func (p *Pipeline) processKLine(ctx context.Context, kline *KLine) error {
 	defer p.mu.Unlock()
 
 	// 1. 包含处理 — 产出新非包含缠论 K 线
-	if ch := p.chanLines.ProcessInclusion(ctx, kline); ch != nil {
-		// 2. 分型识别
-		p.fractalDetector.Feed(ctx, ch)
+	ch := p.chanLines.ProcessInclusion(ctx, kline)
+	if ch == nil {
+		return nil
 	}
+	// 2. 分型识别
+	p.fractalDetector.Feed(ctx, ch)
 
 	// 3. 笔识别（待实现）
 	// 4. 线段识别（待实现）
