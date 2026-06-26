@@ -126,7 +126,7 @@ func (p *Pipeline) parseKLine(msg redis.XMessage) (*KLine, error) {
 		return nil, fmt.Errorf("解析 close 失败: %w", err)
 	}
 
-	volume, err := parseFloat(msg.Values["volume"])
+	volume, err := parseFloat(msg.Values["baseVolume"])
 	if err != nil {
 		return nil, fmt.Errorf("解析 volume 失败: %w", err)
 	}
