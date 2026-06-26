@@ -1,18 +1,20 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "启动缠论分析系统",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/cmd/server",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "CL_LOG_LEVEL": "debug",
-                "CL_LOG_JSON": "true"
-            },
-            "args": ["server"]
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "启动缠论分析系统",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/server",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "CL_LOG_LEVEL": "debug",
+        "CL_LOG_JSON": "true"
+      },
+      "args": [
+        "server"
+      ]
+    }
+  ]
 }

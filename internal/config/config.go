@@ -1,4 +1,4 @@
-// Package config 提供应用配置的加载与管理.
+// Package config 提供应用配置的加载与管理。
 package config
 
 import (
@@ -7,79 +7,151 @@ import (
 	"time"
 )
 
-// Config 是应用全局配置.
+// Config 是应用全局配置。
 type Config struct {
 	Redis  RedisConfig
 	Server ServerConfig
 }
 
-// RedisConfig 包含 Redis 连接配置.
+// RedisConfig 包含 Redis 连接配置。
 type RedisConfig struct {
-	// Addr 是 Redis 地址，格式 host:port.
-	Addr string
-	// Password 是 Redis 连接密码.
-	Password string
-	// DB 是 Redis 数据库编号.
-	DB int
-	// URL 是完整的 Redis URL (如 redis://user:pass@host:6379/0).
-	// 若设置此值，会优先用于连接，忽略 Addr/Password/DB.
-	URL string
-	// MaxRetries 是最大重试次数，0 表示不重试，-1 表示默认.
-	MaxRetries int
-	// DialTimeout 是连接超时.
-	DialTimeout time.Duration
-	// ReadTimeout 是读取超时.
-	ReadTimeout time.Duration
-	// WriteTimeout 是写入超时.
+	Addr         string
+	Password     string
+	DB           int
+	URL          string
+	MaxRetries   int
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
 
-// ServerConfig 包含服务运行配置.
+// ServerConfig 包含服务运行配置。
 type ServerConfig struct {
-	// Symbols 是交易对列表，逗号分隔.
-	Symbols string
+	Symbols       []string
+	StreamPrefix  string
+	ConsumerGroup string
 }
 
-// Load 从环境变量加载配置，返回带默认值的 Config.
-func Load() Config {
-	return Config{
-		Redis: RedisConfig{
-			Addr:         getEnv("REDIS_ADDR", "localhost:6379"),
-			Password:     getEnv("REDIS_PASSWORD", ""),
-			DB:           getEnvInt("REDIS_DB", 0),
-			URL:          os.Getenv("REDIS_URL"),
-			MaxRetries:   getEnvInt("REDIS_MAX_RETRIES", 0),
-			DialTimeout:  getEnvDuration("REDIS_DIAL_TIMEOUT", 5*time.Second),
-			ReadTimeout:  getEnvDuration("REDIS_READ_TIMEOUT", 3*time.Second),
-			WriteTimeout: getEnvDuration("REDIS_WRITE_TIMEOUT", 3*time.Second),
-		},
-		Server: ServerConfig{
-			Symbols: getEnv("SYMBOLS", "BTCUSDT,ETHUSDT"),
+// ConfigBuilder 是 Config 的构建器，支持链式调用。
+type ConfigBuilder struct {
+	cfg *Config
+}
+
+// NewConfigBuilder 创建一个配置构建器。
+func NewConfigBuilder() *ConfigBuilder {
+	return &ConfigBuilder{
+		cfg: &Config{
+			Redis: RedisConfig{
+				Addr:         "127.0.0.1:6379",
+				Password:     "",
+				DB:           0,
+				MaxRetries:   0,
+				DialTimeout:  5 * time.Second,
+				ReadTimeout:  3 * time.Second,
+				WriteTimeout: 3 * time.Second,
+			},
+			Server: ServerConfig{
+				Symbols:       []string{},
+				StreamPrefix:  "trade:kline",
+				ConsumerGroup: "chan-go-group",
+			},
 		},
 	}
 }
 
-func getEnv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
+// RedisAddr 设置 Redis 地址。
+func (b *ConfigBuilder) RedisAddr(v string) *ConfigBuilder {
+	b.cfg.Redis.Addr = v
+	return b
 }
 
-func getEnvInt(key string, fallback int) int {
-	if v, ok := os.LookupEnv(key); ok {
+// RedisPassword 设置 Redis 密码。
+func (b *ConfigBuilder) RedisPassword(v string) *ConfigBuilder {
+	b.cfg.Redis.Password = v
+	return b
+}
+
+// RedisDB 设置 Redis 数据库编号。
+func (b *ConfigBuilder) RedisDB(v int) *ConfigBuilder {
+	b.cfg.Redis.DB = v
+	return b
+}
+
+// RedisURL 设置完整的 Redis URL。
+func (b *ConfigBuilder) RedisURL(v string) *ConfigBuilder {
+	b.cfg.Redis.URL = v
+	return b
+}
+
+// AddSymbol 添加一个监控交易对。
+func (b *ConfigBuilder) AddSymbol(v string) *ConfigBuilder {
+	b.cfg.Server.Symbols = append(b.cfg.Server.Symbols, v)
+	return b
+}
+
+// StreamPrefix 设置 Stream 前缀。
+func (b *ConfigBuilder) StreamPrefix(v string) *ConfigBuilder {
+	b.cfg.Server.StreamPrefix = v
+	return b
+}
+
+// ConsumerGroup 设置消费组名。
+func (b *ConfigBuilder) ConsumerGroup(v string) *ConfigBuilder {
+	b.cfg.Server.ConsumerGroup = v
+	return b
+}
+
+// Build 构建配置。
+func (b *ConfigBuilder) Build() *Config {
+	if len(b.cfg.Server.Symbols) == 0 {
+		b.cfg.Server.Symbols = []string{"BTCUSDT", "ETHUSDT"}
+	}
+	return b.cfg
+}
+
+// DefaultConfig 返回默认开发配置。
+func DefaultConfig() *Config {
+	return NewConfigBuilder().
+		AddSymbol("BTCUSDT").
+		AddSymbol("ETHUSDT").
+		Build()
+}
+
+// LoadFromEnv 从环境变量加载配置覆盖默认值。
+func (c *Config) LoadFromEnv() *Config {
+	if v := os.Getenv("REDIS_ADDR"); v != "" {
+		c.Redis.Addr = v
+	}
+	if v := os.Getenv("REDIS_PASSWORD"); v != "" {
+		c.Redis.Password = v
+	}
+	if v := os.Getenv("REDIS_DB"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			return n
+			c.Redis.DB = n
 		}
 	}
-	return fallback
+	if v := os.Getenv("REDIS_URL"); v != "" {
+		c.Redis.URL = v
+	}
+	if v := os.Getenv("SYMBOLS"); v != "" {
+		c.Server.Symbols = splitAndTrim(v, ",")
+	}
+	return c
 }
 
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
-	if v, ok := os.LookupEnv(key); ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
+func splitAndTrim(s, sep string) []string {
+	var result []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if string(s[i]) == sep {
+			if i > start {
+				result = append(result, s[start:i])
+			}
+			start = i + 1
 		}
 	}
-	return fallback
+	if start < len(s) {
+		result = append(result, s[start:])
+	}
+	return result
 }

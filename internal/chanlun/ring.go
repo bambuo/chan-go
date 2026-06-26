@@ -1,13 +1,12 @@
-// Package app 负责系统组装与生命周期管理。
-package app
+package chanlun
 
 // Ring 是一个泛型环形缓冲区，固定容量，新数据自动覆盖最旧数据。
 type Ring[T any] struct {
-	data  []T   // 存储槽
-	cap   int   // 容量（固定）
-	head  int   // 下一次写入位置
-	count int   // 当前元素数量
-	total int64 // 已写入总数（用于计算全局索引）
+	data  []T
+	cap   int
+	head  int
+	count int
+	total int64
 }
 
 // NewRing 创建一个指定容量的环形缓冲区。
@@ -35,12 +34,10 @@ func (r *Ring[T]) Total() int64 {
 
 // Append 追加一个元素，若已满则覆盖最旧数据，并返回被覆盖的元素。
 func (r *Ring[T]) Append(v T) (evicted T, ok bool) {
-	// 如果已满，head 指向的位置即将被覆盖
 	if r.count == r.cap {
 		evicted = r.data[r.head]
 		ok = true
 	}
-
 	r.data[r.head] = v
 	r.head = (r.head + 1) % r.cap
 	if r.count < r.cap {
@@ -66,7 +63,6 @@ func (r *Ring[T]) At(i int) (T, bool) {
 		var zero T
 		return zero, false
 	}
-	// 最旧元素的位置
 	oldest := (r.head - r.count + r.cap) % r.cap
 	idx := (oldest + i) % r.cap
 	return r.data[idx], true
@@ -80,4 +76,50 @@ func (r *Ring[T]) ForEach(fn func(i int, v T) bool) {
 			break
 		}
 	}
+}
+
+// ToSlice 导出全部元素为切片（从旧到新）。
+func (r *Ring[T]) ToSlice() []T {
+	result := make([]T, 0, r.count)
+	for i := 0; i < r.count; i++ {
+		v, _ := r.At(i)
+		result = append(result, v)
+	}
+	return result
+}
+
+// LastN 返回最近最多 n 个元素（从旧到新）。
+func (r *Ring[T]) LastN(n int) []T {
+	if n <= 0 {
+		return nil
+	}
+	start := 0
+	if r.count > n {
+		start = r.count - n
+	}
+	result := make([]T, 0, r.count-start)
+	for i := start; i < r.count; i++ {
+		v, _ := r.At(i)
+		result = append(result, v)
+	}
+	return result
+}
+
+// Clear 清空缓冲区。
+func (r *Ring[T]) Clear() {
+	var zero T
+	for i := 0; i < r.count; i++ {
+		r.data[(r.head+i)%r.cap] = zero
+	}
+	r.head = 0
+	r.count = 0
+}
+
+// First 返回第一个元素（最旧），若为空返回零值和 false。
+func (r *Ring[T]) First() (T, bool) {
+	if r.count == 0 {
+		var zero T
+		return zero, false
+	}
+	return r.data[r.head], true
 }
