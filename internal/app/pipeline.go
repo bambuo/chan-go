@@ -22,9 +22,8 @@ type Pipeline struct {
 	consumer string // 每个管线唯一的消费者名称
 
 	// 缠论算法状态
-	mu          sync.Mutex
-	mergedLines []*MergedKLine // 合并 K 线序列
-	lastKLine   *KLine         // 上一根 K 线
+	mu        sync.Mutex
+	chanLines *ChanKLineSequence // 缠论 K 线序列
 }
 
 // NewPipeline 创建一个新的处理管线实例。
@@ -32,12 +31,13 @@ type Pipeline struct {
 func NewPipeline(symbol, stream string, rdb *redis.Client, log *logger.Logger, group, baseConsumer string) *Pipeline {
 	consumer := fmt.Sprintf("%s-%s", baseConsumer, symbol)
 	return &Pipeline{
-		symbol:   symbol,
-		stream:   stream,
-		rdb:      rdb,
-		log:      log.With("symbol", symbol),
-		group:    group,
-		consumer: consumer,
+		symbol:    symbol,
+		stream:    stream,
+		rdb:       rdb,
+		log:       log.With("symbol", symbol),
+		group:     group,
+		consumer:  consumer,
+		chanLines: NewChanKLineSequence(),
 	}
 }
 
@@ -84,6 +84,11 @@ func (p *Pipeline) Start(ctx context.Context, wg *sync.WaitGroup) {
 
 // processMessage 处理单个 Redis 消息。
 func (p *Pipeline) processMessage(ctx context.Context, msg redis.XMessage) error {
+	// 检查上下文是否已取消
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	// 解析 K 线数据
 	kline, err := p.parseKLine(msg)
 	if err != nil {
@@ -144,13 +149,16 @@ func (p *Pipeline) parseKLine(msg redis.XMessage) (*KLine, error) {
 
 // processKLine 处理一根 K 线，执行缠论算法。
 func (p *Pipeline) processKLine(ctx context.Context, kline *KLine) error {
+	// 检查上下文是否已取消
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// 1. 包含处理
-	if err := p.processInclusion(kline); err != nil {
-		return fmt.Errorf("包含处理失败: %w", err)
-	}
+	// 1. 包含处理（委托给 ChanKLineSequence）
+	p.chanLines.ProcessInclusion(kline)
 
 	// 2. 分型识别（待实现）
 	// 3. 笔识别（待实现）
@@ -166,113 +174,10 @@ func (p *Pipeline) processKLine(ctx context.Context, kline *KLine) error {
 		"low", kline.Low,
 		"close", kline.Close,
 		"ts", kline.Timestamp,
-		"mergedLines", len(p.mergedLines),
+		"chanLines", p.chanLines.Len(),
 	)
 
 	return nil
-}
-
-// processInclusion 执行包含处理算法。
-// 根据缠论原文，处理 K 线之间的包含关系。
-func (p *Pipeline) processInclusion(kline *KLine) error {
-	// 如果没有合并 K 线，直接添加第一根
-	if len(p.mergedLines) == 0 {
-		merged := &MergedKLine{
-			High:      kline.High,
-			Low:       kline.Low,
-			Direction: 1, // 初始方向向上
-			Index:     0,
-		}
-		p.mergedLines = append(p.mergedLines, merged)
-		p.lastKLine = kline
-		return nil
-	}
-
-	// 获取最后一根合并 K 线
-	lastMerged := p.mergedLines[len(p.mergedLines)-1]
-
-	// 判断包含关系
-	if p.isInclusion(lastMerged, kline) {
-		// 存在包含关系，进行合并
-		p.mergeKLines(lastMerged, kline)
-	} else {
-		// 不存在包含关系，直接添加
-		merged := &MergedKLine{
-			High:      kline.High,
-			Low:       kline.Low,
-			Direction: lastMerged.Direction, // 保持当前方向
-			Index:     len(p.mergedLines),
-		}
-		p.mergedLines = append(p.mergedLines, merged)
-
-		// 更新方向
-		p.updateDirection()
-	}
-
-	p.lastKLine = kline
-	return nil
-}
-
-// isInclusion 判断两根 K 线是否存在包含关系。
-// 包含关系：当前高 <= 前一根高 且 当前低 >= 前一根低，或者
-// 当前高 >= 前一根高 且 当前低 <= 前一根低
-func (p *Pipeline) isInclusion(merged *MergedKLine, kline *KLine) bool {
-	return (kline.High <= merged.High && kline.Low >= merged.Low) ||
-		(kline.High >= merged.High && kline.Low <= merged.Low)
-}
-
-// mergeKLines 合并 K 线。
-// 根据方向决定合并方式：
-// - 向上：取两边高点中的更高者、低点中的更高者
-// - 向下：取两边高点中的更低者、低点中的更低者
-func (p *Pipeline) mergeKLines(merged *MergedKLine, kline *KLine) {
-	if merged.Direction == 1 {
-		// 向上：取高高，低高
-		merged.High = max(merged.High, kline.High)
-		merged.Low = max(merged.Low, kline.Low)
-	} else {
-		// 向下：取低高，低低
-		merged.High = min(merged.High, kline.High)
-		merged.Low = min(merged.Low, kline.Low)
-	}
-}
-
-// updateDirection 更新方向。
-// 以非包含序列中最后两个元素为基准判定方向：
-// - 若第二根高点 > 第一根高点 且 第二根低点 > 第一根低点 → 方向更新为向上
-// - 若第二根高点 < 第一根高点 且 第二根低点 < 第一根低点 → 方向更新为向下
-// - 否则方向保持不变
-func (p *Pipeline) updateDirection() {
-	if len(p.mergedLines) < 2 {
-		return
-	}
-
-	current := p.mergedLines[len(p.mergedLines)-1]
-	previous := p.mergedLines[len(p.mergedLines)-2]
-
-	if current.High > previous.High && current.Low > previous.Low {
-		current.Direction = 1 // 向上
-	} else if current.High < previous.High && current.Low < previous.Low {
-		current.Direction = -1 // 向下
-	} else {
-		current.Direction = previous.Direction // 保持前一个方向
-	}
-}
-
-// max 返回两个浮点数中的较大值。
-func max(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-// min 返回两个浮点数中的较小值。
-func min(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // parseFloat 从接口值中解析浮点数。
