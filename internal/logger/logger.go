@@ -1,7 +1,10 @@
 // Package logger 提供日志记录器的封装，隐藏底层 zap 实现细节。
 package logger
 
-import "go.uber.org/zap"
+import (
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
 
 // Logger 是项目统一的日志记录器，通过方法注入使用，不依赖全局状态。
 type Logger struct {
@@ -9,8 +12,14 @@ type Logger struct {
 }
 
 // New 创建一个生产级别的 JSON 格式日志记录器。
+// - time 字段使用 ISO 8601 格式（2006-01-02T15:04:05.000+0800）
+// - caller 跳过封装层指向真实调用方。
 func New() (*Logger, error) {
-	l, err := zap.NewProduction()
+	cfg := zap.NewProductionConfig()
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("2006-01-02T15:04:05.000Z0700")
+
+	l, err := cfg.Build(zap.AddCallerSkip(1))
 	if err != nil {
 		return nil, err
 	}
