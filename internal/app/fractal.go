@@ -3,21 +3,18 @@ package app
 
 import "context"
 
-// FractalCallback 是分型识别回调，检测到分型时由上层处理持久化。
-type FractalCallback func(ctx context.Context, chanLine *ChanKLine)
-
 // FractalDetector 是分型识别器，负责从非包含合并 K 线序列中识别顶底分型。
-// 输入源必须为经过包含处理后的非包含 K 线序列。
+// 检测到分型时直接写入 Redis 分型 ZSET。
 type FractalDetector struct {
-	ring      *Ring[*ChanKLine] // 容量 3，滑动窗口
-	onFractal FractalCallback   // 分型回调
+	ring  *Ring[*ChanKLine] // 容量 3，滑动窗口
+	store *ChanKLineStore   // 分型持久化
 }
 
 // NewFractalDetector 创建一个新的分型识别器。
-func NewFractalDetector(onFractal FractalCallback) *FractalDetector {
+func NewFractalDetector(store *ChanKLineStore) *FractalDetector {
 	return &FractalDetector{
-		ring:      NewRing[*ChanKLine](3), // 分型判定需要连续三根合并 K 线
-		onFractal: onFractal,
+		ring:  NewRing[*ChanKLine](3), // 分型判定需要连续三根合并 K 线
+		store: store,
 	}
 }
 
@@ -44,9 +41,7 @@ func (fd *FractalDetector) detect(ctx context.Context) {
 	if mid.High > left.High && mid.High > right.High &&
 		mid.Low > left.Low && mid.Low > right.Low {
 		mid.Fractal = FractalTop
-		if fd.onFractal != nil {
-			fd.onFractal(ctx, mid)
-		}
+		fd.persist(ctx, mid)
 		return
 	}
 
@@ -54,9 +49,12 @@ func (fd *FractalDetector) detect(ctx context.Context) {
 	if mid.Low < left.Low && mid.Low < right.Low &&
 		mid.High < left.High && mid.High < right.High {
 		mid.Fractal = FractalBottom
-		if fd.onFractal != nil {
-			fd.onFractal(ctx, mid)
-		}
+		fd.persist(ctx, mid)
 		return
 	}
+}
+
+// persist 将分型 K 线写入 Redis ZSET。
+func (fd *FractalDetector) persist(ctx context.Context, cl *ChanKLine) {
+	_ = fd.store.SaveFractal(ctx, cl)
 }

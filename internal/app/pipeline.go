@@ -22,22 +22,25 @@ type Pipeline struct {
 	consumer string // 每个管线唯一的消费者名称
 
 	// 缠论算法状态
-	mu        sync.Mutex
-	chanLines *ChanKLineSequence // 缠论 K 线序列（包含持久化）
+	mu              sync.Mutex
+	chanLines       *ChanKLineSequence // 缠论 K 线序列（包含持久化）
+	fractalDetector *FractalDetector   // 分型识别器
 }
 
 // NewPipeline 创建一个新的处理管线实例。
 // 为每个管线生成唯一的消费者名称：{baseConsumer}-{symbol}
 func NewPipeline(symbol, stream string, rdb *redis.Client, log *logger.Logger, group, baseConsumer string) *Pipeline {
 	consumer := fmt.Sprintf("%s-%s", baseConsumer, symbol)
+	st := NewChanKLineStore(rdb, symbol)
 	return &Pipeline{
-		symbol:    symbol,
-		stream:    stream,
-		rdb:       rdb,
-		log:       log.With("symbol", symbol),
-		group:     group,
-		consumer:  consumer,
-		chanLines: NewChanKLineSequence(rdb, symbol),
+		symbol:          symbol,
+		stream:          stream,
+		rdb:             rdb,
+		log:             log.With("symbol", symbol),
+		group:           group,
+		consumer:        consumer,
+		chanLines:       NewChanKLineSequence(st),
+		fractalDetector: NewFractalDetector(st),
 	}
 }
 
@@ -157,10 +160,12 @@ func (p *Pipeline) processKLine(ctx context.Context, kline *KLine) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// 1. 包含处理（委托给 ChanKLineSequence）
-	p.chanLines.ProcessInclusion(ctx, kline)
+	// 1. 包含处理 — 产出新非包含缠论 K 线
+	if ch := p.chanLines.ProcessInclusion(ctx, kline); ch != nil {
+		// 2. 分型识别
+		p.fractalDetector.Feed(ctx, ch)
+	}
 
-	// 2. 分型识别（待实现）
 	// 3. 笔识别（待实现）
 	// 4. 线段识别（待实现）
 	// 5. 中枢识别（待实现）

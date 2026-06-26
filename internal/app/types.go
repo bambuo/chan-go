@@ -3,8 +3,6 @@ package app
 
 import (
 	"context"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // Direction 是 K 线方向类型。
@@ -66,20 +64,14 @@ type ChanKLineSequence struct {
 	mergedRing *Ring[*ChanKLine] // 合并 K 线序列（结果序列）
 	nonIncRing *Ring[*ChanKLine] // 非包含 K 线序列（方向判定用）
 	store      *ChanKLineStore   // Redis 持久化
-	fractal    *FractalDetector  // 分型识别器
 }
 
 // NewChanKLineSequence 创建一个新的缠论 K 线序列。
-func NewChanKLineSequence(rdb *redis.Client, symbol string) *ChanKLineSequence {
-	st := NewChanKLineStore(rdb, symbol)
+func NewChanKLineSequence(store *ChanKLineStore) *ChanKLineSequence {
 	return &ChanKLineSequence{
 		mergedRing: NewRing[*ChanKLine](1), // 仅需保留结果序列中最后一根
 		nonIncRing: NewRing[*ChanKLine](2), // 仅需非包含序列中最后两个元素
-		store:      st,
-		fractal: NewFractalDetector(func(ctx context.Context, cl *ChanKLine) {
-			// 分型识别时立即写入分型 ZSET
-			_ = st.SaveFractal(ctx, cl)
-		}),
+		store:      store,
 	}
 }
 
@@ -98,9 +90,9 @@ func (s *ChanKLineSequence) Len() int {
 }
 
 // ProcessInclusion 执行包含处理算法，将原始 K 线加入序列。
-// 根据缠论原文，处理 K 线之间的包含关系。
+// 返回新产生的非包含缠论 K 线（包含处理时返回 nil），供上层做后续检测。
 // 当合并 K 线移出内存窗口时自动持久化到 Redis。
-func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) {
+func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) *ChanKLine {
 	// 如果没有缠论 K 线，直接添加第一根
 	last, ok := s.mergedRing.Last()
 	if !ok {
@@ -112,38 +104,33 @@ func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) 
 		}
 		s.mergedRing.Append(chanLine)
 		s.nonIncRing.Append(chanLine)
-		s.fractal.Feed(ctx, chanLine)
-		return
+		return chanLine
 	}
 
 	// 判断包含关系
 	if isInclusion(last, kline) {
 		// 存在包含关系，进行合并（原地更新，不触发覆盖）
 		mergeChanKLine(last, kline)
-	} else {
-		// 不存在包含关系，产生新缠论 K 线
-		// 同时加入 mergedRing（用于包含判定）和 nonIncRing（用于方向更新）
-		chanLine := &ChanKLine{
-			High:      kline.High,
-			Low:       kline.Low,
-			Direction: last.Direction, // 暂用上一根方向，随后更新
-			Timestamp: kline.Timestamp,
-		}
-
-		// mergedRing 满时 old 被覆盖 → 持久化
-		if evicted, ok := s.mergedRing.Append(chanLine); ok {
-			s.persistEvicted(ctx, evicted)
-		}
-
-		// nonIncRing 满时 old 直接丢弃（不需要持久化，已在 mergedRing 被覆盖时持久化过）
-		s.nonIncRing.Append(chanLine)
-
-		// 从非包含序列更新方向
-		s.updateDirection()
-
-		// 送入分型识别器
-		s.fractal.Feed(ctx, chanLine)
+		return nil
 	}
+
+	// 不存在包含关系，产生新缠论 K 线
+	chanLine := &ChanKLine{
+		High:      kline.High,
+		Low:       kline.Low,
+		Direction: last.Direction, // 暂用上一根方向，随后更新
+		Timestamp: kline.Timestamp,
+	}
+
+	// mergedRing 满时 old 被覆盖 → 持久化
+	if evicted, ok := s.mergedRing.Append(chanLine); ok {
+		s.persistEvicted(ctx, evicted)
+	}
+
+	// nonIncRing 满时 old 直接丢弃
+	s.nonIncRing.Append(chanLine)
+	s.updateDirection()
+	return chanLine
 }
 
 // persistEvicted 将被覆盖的合并 K 线持久化到 Redis。
