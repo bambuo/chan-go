@@ -7,6 +7,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Direction 是 K 线方向类型。
+type Direction int
+
+// K 线方向常量。
+const (
+	DirectionUp   = Direction(1)  // 向上
+	DirectionDown = Direction(-1) // 向下
+)
+
 // KLine 表示一根原始 K 线数据。
 type KLine struct {
 	// Symbol 是交易对名称，如 BTCUSDT。
@@ -31,8 +40,8 @@ type ChanKLine struct {
 	High float64 `json:"high"`
 	// Low 是合并后的最低价。
 	Low float64 `json:"low"`
-	// Direction 是方向：1 表示向上，-1 表示向下。
-	Direction int `json:"direction"`
+	// Direction 是方向，取值为 DirectionUp 或 DirectionDown。
+	Direction Direction `json:"direction"`
 	// Fractal 是分型类型：1 表示顶分型，-1 表示底分型，0 表示未知。
 	Fractal int `json:"fractal"`
 	// Timestamp 是该 K 线对应的最后一根原始 K 线时间戳（毫秒）。
@@ -82,7 +91,7 @@ func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) 
 		chanLine := &ChanKLine{
 			High:      kline.High,
 			Low:       kline.Low,
-			Direction: 1, // 初始方向向上
+			Direction: DirectionUp, // 初始方向向上
 			Timestamp: kline.Timestamp,
 		}
 		s.mergedRing.Append(chanLine)
@@ -139,7 +148,7 @@ func isInclusion(chanLine *ChanKLine, kline *KLine) bool {
 // - 向上：取两边高点中的更高者、低点中的更高者
 // - 向下：取两边高点中的更低者、低点中的更低者
 func mergeChanKLine(chanLine *ChanKLine, kline *KLine) {
-	if chanLine.Direction == 1 {
+	if chanLine.Direction == DirectionUp {
 		// 向上：取高高，低高
 		chanLine.High = max(chanLine.High, kline.High)
 		chanLine.Low = max(chanLine.Low, kline.Low)
@@ -166,9 +175,9 @@ func (s *ChanKLineSequence) updateDirection() {
 	previous, _ := s.nonIncRing.At(s.nonIncRing.Len() - 2)
 
 	if current.High > previous.High && current.Low > previous.Low {
-		current.Direction = 1 // 向上
+		current.Direction = DirectionUp
 	} else if current.High < previous.High && current.Low < previous.Low {
-		current.Direction = -1 // 向下
+		current.Direction = DirectionDown
 	} else {
 		current.Direction = previous.Direction // 保持前一个方向
 	}
