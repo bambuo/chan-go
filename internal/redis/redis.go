@@ -7,18 +7,19 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 
 	"trade/internal/config"
+	"trade/internal/logger"
 )
 
 // Client 是对 go-redis Client 的轻量封装，提供健康检查和优雅关闭.
 type Client struct {
 	*redis.Client
+	log *logger.Logger
 }
 
 // NewClient 根据配置创建一个 Redis 客户端并验证连通性.
-func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
+func NewClient(ctx context.Context, cfg config.RedisConfig, log *logger.Logger) (*Client, error) {
 	var rdb redis.UniversalClient
 
 	if cfg.URL != "" {
@@ -39,7 +40,7 @@ func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
 		})
 	}
 
-	client := &Client{rdb.(*redis.Client)}
+	client := &Client{rdb.(*redis.Client), log}
 
 	// 验证连通性
 	if err := client.Ping(ctx); err != nil {
@@ -47,7 +48,7 @@ func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
 		return nil, fmt.Errorf("Redis 连通性检查失败: %w", err)
 	}
 
-	zap.S().Infow("Redis 连接已建立",
+	log.Info("Redis 连接已建立",
 		"addr", client.Options().Addr,
 		"db", client.Options().DB,
 	)
@@ -63,6 +64,6 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Close 优雅关闭 Redis 连接.
 func (c *Client) Close() error {
-	zap.S().Info("正在关闭 Redis 连接")
+	c.log.Info("正在关闭 Redis 连接")
 	return c.Client.Close()
 }

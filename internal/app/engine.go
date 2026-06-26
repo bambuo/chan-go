@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
+
+	"trade/internal/logger"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 
 // Engine 是信号分析引擎，自动发现并消费所有 trade:kline:* 流。
 type Engine struct {
+	log      *logger.Logger
 	rdb      *redis.Client
 	group    string
 	consumer string
@@ -31,8 +33,9 @@ type Engine struct {
 }
 
 // New 创建一个引擎实例。
-func New(rdb *redis.Client) *Engine {
+func New(rdb *redis.Client, log *logger.Logger) *Engine {
 	return &Engine{
+		log:      log,
 		rdb:      rdb,
 		group:    defaultGroup,
 		consumer: defaultConsumer,
@@ -42,7 +45,6 @@ func New(rdb *redis.Client) *Engine {
 }
 
 // Start 启动引擎：立即扫描发现流并启动定期发现循环。
-// ctx 被取消时所有消费者自动退出。
 func (e *Engine) Start(ctx context.Context) {
 	e.wg.Add(1)
 	go e.discoverLoop(ctx)
@@ -58,7 +60,7 @@ func (e *Engine) discoverLoop(ctx context.Context) {
 	defer e.wg.Done()
 
 	e.discover(ctx)
-	zap.S().Info("引擎已启动，持续扫描 trade:kline:* 流")
+	e.log.Info("引擎已启动，持续扫描 trade:kline:* 流")
 
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
@@ -79,7 +81,7 @@ func (e *Engine) discover(ctx context.Context) {
 	for {
 		keys, nextCursor, err := e.rdb.Scan(ctx, cursor, "trade:kline:*", 100).Result()
 		if err != nil {
-			zap.S().Errorw("扫描 Stream 失败", "error", err)
+			e.log.Error("扫描 Stream 失败", "error", err)
 			return
 		}
 
@@ -91,12 +93,12 @@ func (e *Engine) discover(ctx context.Context) {
 				e.mu.Unlock()
 
 				if err := e.createGroup(ctx, key); err != nil {
-					zap.S().Errorw("创建消费组失败", "stream", key, "error", err)
+					e.log.Error("创建消费组失败", "stream", key, "error", err)
 					continue
 				}
 				e.wg.Add(1)
 				go e.consume(ctx, key)
-				zap.S().Infow("发现新流，已启动消费", "stream", key)
+				e.log.Info("发现新流，已启动消费", "stream", key)
 			} else {
 				e.mu.Unlock()
 			}
@@ -121,11 +123,11 @@ func (e *Engine) createGroup(ctx context.Context, stream string) error {
 // consume 持续从指定 Stream 读取并处理 K 线消息。
 func (e *Engine) consume(ctx context.Context, stream string) {
 	defer e.wg.Done()
-	zap.S().Infow("开始监听流", "stream", stream)
+	e.log.Info("开始监听流", "stream", stream)
 
 	for {
 		if ctx.Err() != nil {
-			zap.S().Infow("流消费已停止", "stream", stream)
+			e.log.Info("流消费已停止", "stream", stream)
 			return
 		}
 
@@ -138,26 +140,26 @@ func (e *Engine) consume(ctx context.Context, stream string) {
 		}).Result()
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				zap.S().Infow("流消费已停止", "stream", stream)
+				e.log.Info("流消费已停止", "stream", stream)
 				return
 			}
 			if errors.Is(err, redis.Nil) {
 				continue
 			}
 			if strings.Contains(err.Error(), "NOGROUP") {
-				zap.S().Warnw("消费组不存在，尝试重建", "stream", stream)
-				if e := e.createGroup(ctx, stream); e != nil {
-					zap.S().Errorw("重建消费组失败", "stream", stream, "error", e)
+				e.log.Warn("消费组不存在，尝试重建", "stream", stream)
+				if cerr := e.createGroup(ctx, stream); cerr != nil {
+					e.log.Error("重建消费组失败", "stream", stream, "error", cerr)
 				}
 				continue
 			}
-			zap.S().Errorw("读取 Stream 失败", "stream", stream, "error", err)
+			e.log.Error("读取 Stream 失败", "stream", stream, "error", err)
 			continue
 		}
 
 		for _, result := range msgs {
 			for _, msg := range result.Messages {
-				zap.S().Infow("收到 K 线",
+				e.log.Info("收到 K 线",
 					"stream", stream,
 					"id", msg.ID,
 					"symbol", msg.Values["symbol"],
