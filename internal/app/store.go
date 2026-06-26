@@ -28,41 +28,50 @@ func (s *ChanKLineStore) key() string {
 	return fmt.Sprintf("trade:kline:chan:%s", s.symbol)
 }
 
-// Save 将缠论 K 线列表追加到 Redis List。
+// Save 将缠论 K 线列表追加到 Redis ZSET，以时间戳为 score。
 func (s *ChanKLineStore) Save(ctx context.Context, lines []*ChanKLine) error {
 	if len(lines) == 0 {
 		return nil
 	}
 
-	// 序列化为 JSON
-	data, err := json.Marshal(lines)
-	if err != nil {
-		return fmt.Errorf("序列化失败: %w", err)
-	}
+	// 添加到 Redis ZSET
+	for _, line := range lines {
+		data, err := json.Marshal(line)
+		if err != nil {
+			return fmt.Errorf("序列化失败: %w", err)
+		}
 
-	// 追加到 Redis List
-	if err := s.rdb.RPush(ctx, s.key(), data).Err(); err != nil {
-		return fmt.Errorf("写入 Redis 失败: %w", err)
+		if err := s.rdb.ZAdd(ctx, s.key(), redis.Z{
+			Score:  float64(line.Timestamp),
+			Member: data,
+		}).Err(); err != nil {
+			return fmt.Errorf("写入 Redis 失败: %w", err)
+		}
 	}
 
 	return nil
 }
 
-// Load 从 Redis List 加载最新的 N 条缠论 K 线。
+// Load 从 Redis ZSET 加载最新的 N 条缠论 K 线（按时间戳降序）。
 func (s *ChanKLineStore) Load(ctx context.Context, count int64) ([]*ChanKLine, error) {
-	// 获取最新的 count 条数据
-	data, err := s.rdb.LRange(ctx, s.key(), -count, -1).Result()
+	// 获取最新的 count 条数据（按 score 降序）
+	data, err := s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   s.key(),
+		Start: 0,
+		Stop:  count - 1,
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, fmt.Errorf("读取 Redis 失败: %w", err)
 	}
 
 	var result []*ChanKLine
 	for _, item := range data {
-		var lines []*ChanKLine
-		if err := json.Unmarshal([]byte(item), &lines); err != nil {
+		var kline ChanKLine
+		if err := json.Unmarshal([]byte(item), &kline); err != nil {
 			return nil, fmt.Errorf("反序列化失败: %w", err)
 		}
-		result = append(result, lines...)
+		result = append(result, &kline)
 	}
 
 	return result, nil
