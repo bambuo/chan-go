@@ -16,6 +16,16 @@ const (
 	DirectionDown = Direction(-1) // 向下
 )
 
+// Fractal 是分型类型。
+type Fractal int
+
+// 分型类型常量。
+const (
+	FractalNone   = Fractal(0)  // 非分型
+	FractalTop    = Fractal(1)  // 顶分型
+	FractalBottom = Fractal(-1) // 底分型
+)
+
 // KLine 表示一根原始 K 线数据。
 type KLine struct {
 	// Symbol 是交易对名称，如 BTCUSDT。
@@ -42,8 +52,8 @@ type ChanKLine struct {
 	Low float64 `json:"low"`
 	// Direction 是方向，取值为 DirectionUp 或 DirectionDown。
 	Direction Direction `json:"direction"`
-	// Fractal 是分型类型：1 表示顶分型，-1 表示底分型，0 表示未知。
-	Fractal int `json:"fractal"`
+	// Fractal 是分型类型，取值为 FractalNone / FractalTop / FractalBottom。
+	Fractal Fractal `json:"fractal"`
 	// Timestamp 是该 K 线对应的最后一根原始 K 线时间戳（毫秒）。
 	Timestamp int64 `json:"ts"`
 }
@@ -56,6 +66,7 @@ type ChanKLineSequence struct {
 	mergedRing *Ring[*ChanKLine] // 合并 K 线序列（结果序列）
 	nonIncRing *Ring[*ChanKLine] // 非包含 K 线序列（方向判定用）
 	store      *ChanKLineStore   // Redis 持久化
+	fractal    *FractalDetector  // 分型识别器
 }
 
 // NewChanKLineSequence 创建一个新的缠论 K 线序列。
@@ -64,6 +75,7 @@ func NewChanKLineSequence(rdb *redis.Client, symbol string) *ChanKLineSequence {
 		mergedRing: NewRing[*ChanKLine](1), // 仅需保留结果序列中最后一根
 		nonIncRing: NewRing[*ChanKLine](2), // 仅需非包含序列中最后两个元素
 		store:      NewChanKLineStore(rdb, symbol),
+		fractal:    NewFractalDetector(),
 	}
 }
 
@@ -96,6 +108,7 @@ func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) 
 		}
 		s.mergedRing.Append(chanLine)
 		s.nonIncRing.Append(chanLine)
+		s.fractal.Feed(chanLine)
 		return
 	}
 
@@ -123,6 +136,9 @@ func (s *ChanKLineSequence) ProcessInclusion(ctx context.Context, kline *KLine) 
 
 		// 从非包含序列更新方向
 		s.updateDirection()
+
+		// 送入分型识别器
+		s.fractal.Feed(chanLine)
 	}
 }
 
